@@ -7,3 +7,7 @@
 /client/JE_WLY_Clinet/Temp
 /client/JE_WLY_Clinet/Logs
 /client/JE_WLY_Clinet/UserSettings
+/client/JE_WLY_Clinet/Assets/HotUpdateResources/Main/Dll/Hidden~
+/client/JE_WLY_Clinet/*.csproj
+/client/JE_WLY_Clinet/*.sln
+/client/JE_WLY_Clinet/HotUpdateScripts/HotUpdateScripts.csproj.user
