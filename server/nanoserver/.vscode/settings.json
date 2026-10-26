@@ -1,0 +1,25 @@
+{
+  "protoc": {
+    "options": [
+      "--proto_path=${workspaceFolder}/protocol/protobuf/proto"
+    ]
+  },
+  "go.lintTool": "golangci-lint",
+  "go.formatTool": "gofumpt",
+  "go.toolsEnvVars": {
+    "GO111MODULE": "on",
+    "GOPATH": "${env:GOPATH}",
+    "GOPROXY": "https://goproxy.cn,direct"
+  },
+  "go.toolsManagement.autoUpdate": true,
+  // "terminal.integrated.defaultProfile.windows": "Ubuntu-22.04 (WSL)", 
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "[go]": {
+    "editor.defaultFormatter": "golang.go", // 使用 Go 官方扩展
+    "editor.formatOnSave": true, // 保存时自动格式化
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit" // 保存时自动整理导入
+    }
+  },
+}
