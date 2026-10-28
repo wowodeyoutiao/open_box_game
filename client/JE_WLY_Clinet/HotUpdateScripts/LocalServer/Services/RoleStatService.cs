@@ -95,14 +95,15 @@ namespace HotUpdateScripts.LocalNet
             AddInitialSpeed(role.Job, values);
             AddEquipment(role, values);
             AddCriticalDamage(values);
-            // ⚠️ 过渡态：仍把上阵伙伴属性并入玩家。
+            // ⚠️ 这里**不并入**上阵伙伴的属性。
             //
-            //    原服 p.stats 是不含伙伴的（伙伴走 Partner.refreshStats，结果只进 packet.Partners，
-            //    只有 TotalCombat 相加）。拆开的代码已经写好并验证过（见 doc 63 节），
-            //    但拆开后 boss/tower 会打不过 —— 根因不是伙伴不参战（AI 早就有了），
-            //    而是**测试角色是裸装空壳**：自身 atk=72，打不动 3608 血的 boss，
-            //    之前一直靠伙伴属性合并撑着。属测试基线问题，待定练度后再拆。
-            PartnerService.Instance.AddPartnerStats(values);
+            //    原服 Player.refreshStats 里 p.stats 完全不含伙伴属性：伙伴走自己的
+            //    Partner.refreshStats（partner.go:150），结果通过 packet.Partners 单独下发，
+            //    只有 TotalCombat 才相加（player.go:924-931）。
+            //
+            //    伙伴的战斗力由「独立伙伴战斗单位」提供：自己的属性
+            //    （BuildPartnerStatsFinal）、自己的索敌/追击/攻击（BattleService.UpdatePartners）、
+            //    以及被怪物仇恨锁定后的承伤（ApplyHit 里设 monster.Target）。
             // 战宠属性（原服 refreshStats 里 petStatus / newpetStatus 那两段）。
             // 位置很关键：原服是先加宠物、再算魂石的生命百分比尾数，
             // 所以宠物血要算进「当前累计生命」这个基数里 → 必须放在 AddGemstones 之前。
@@ -138,9 +139,9 @@ namespace HotUpdateScripts.LocalNet
             role.Defense = Get(values, defenseAttr);
             role.MaxHp = maxHealth;
             role.CurHp = currentHealth;
-            // 过渡态：伙伴属性已并入 values（见上面的说明），战力在合并口径下算一次。
-            // 拆开后应改成：combat（玩家自身） + SumPartnerCombat(role)。见 doc 63 节。
-            role.TotalCombat = combat;
+            // 原服：packet.Combat = 玩家自身战力；packet.TotalCombat = 玩家 + Σ上阵伙伴战力
+            // （player.go:910-931）。各自算完再相加，不是合并属性算一次。
+            role.TotalCombat = combat + SumPartnerCombat(role);
 
             return new RoleStatSnapshot(values, combat);
         }

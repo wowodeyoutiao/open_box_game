@@ -1232,6 +1232,66 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 伙伴槽位 1 需要主角 20 级（config.xml openslot），
         /// 测试角色可能还没到，这里临时提等级，BoxSnapshot 会自动恢复。
         /// </summary>
+        /// <summary>
+        /// 给测试角色穿一套「与当前等级匹配」的全套装备（模拟真实玩家练度）。
+        ///
+        /// 为什么需要：伙伴属性不再并入玩家之后，测试角色自身 atk 只有 72，
+        /// 打不动首领副本 3608 血的怪 —— 这不是难度问题，是测试角色裸装。
+        /// 真实玩家会穿同等级装备，这里按 item.json 的档位补齐：
+        ///   101..112 是 lv1 的 12 个部位，每 +12 一个等级档
+        ///   ⇒ lvN 的 12 件 = 101 + (N-1)*12 .. +11
+        /// 例：lv20 → 329..340（攻 +229 / 物防 +127 / 生命 +2276）。
+        ///
+        /// 装备限制：测试角色是战士（job=1），这一档全是 Occupylimit=1，可直接穿。
+        /// 返回成功穿上的件数。
+        /// </summary>
+        private static int EnsureLevelEquips(LocalRole role)
+        {
+            if (role == null)
+                return 0;
+            if (role.BagData == null)
+                role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+            if (role.Equips == null)
+                role.Equips = new Dictionary<EquipSlot, ItemInfo>();
+
+            int level = role.Level < 1 ? 1 : role.Level;
+            int baseId = 101 + (level - 1) * 12;
+            int equipped = 0;
+
+            for (int i = 0; i < 12; i++)
+            {
+                EquipSlot slot = (EquipSlot)(i + 1);
+                int cfgId = baseId + i;
+                ItemService.Instance.GrantReward(role, cfgId, 1);
+                long uid = 0;
+                for (int b = role.BagData.ItemList.Count - 1; b >= 0; b--)
+                {
+                    ItemInfo bagItem = role.BagData.ItemList[b];
+                    if (bagItem != null && bagItem.CfgId == cfgId)
+                    {
+                        uid = bagItem.Uid;
+                        break;
+                    }
+                }
+                if (uid <= 0)
+                    continue;
+
+                object raw = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = slot,
+                    ItemUid = uid,
+                }));
+                var resp = raw as ChangeEquipResponse;
+                if (resp != null && resp.Code != 0)
+                    Log.Print("[gear] slot=" + slot + " cfg=" + cfgId + " FAIL " + resp.Error);
+                if (role.Equips.ContainsKey(slot) && role.Equips[slot] != null)
+                    equipped++;
+            }
+            RoleStatService.Instance.Recalculate(role, true);
+            return equipped;
+        }
+
         private static void EnsureBattlePartner(LocalRole role)
         {
             if (role == null)
@@ -1447,6 +1507,8 @@ namespace HotUpdateScripts.LocalNet.Testing
             int oldCombat = role.TotalCombat;
             List<PartnerInfo> oldPartners = role.Partners;
             List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            Dictionary<EquipSlot, ItemInfo> oldEquips = role.Equips;
+            List<ItemInfo> oldBagItems = role.BagData == null ? null : role.BagData.ItemList;
             try
             {
                 BattleService.Instance.Exit();
@@ -1473,6 +1535,10 @@ namespace HotUpdateScripts.LocalNet.Testing
 
                 // 3) 正常进入首领本
                 EnsureBattlePartner(role);
+                // 测试角色裸装 atk 只有 72，打不动 3608 血的 boss；
+                // 按当前等级补一套装备，模拟真实玩家练度（不是调游戏难度）。
+                int geared = EnsureLevelEquips(role);
+                result.Check(geared == 12, "boss.geared=" + geared);
                 JoinDeskResponse enter = BattleService.Instance.Enter(new JoinDeskRequest
                 {
                     RoomId = 700,
@@ -1516,11 +1582,10 @@ namespace HotUpdateScripts.LocalNet.Testing
                             break;
                     }
                 }
-
                 result.Check(BattleService.Instance.AliveMonsterCount == 0,
                     "boss.killed=" + BattleService.Instance.AliveMonsterCount
                         + "/hp" + BattleService.Instance.MonsterHpTotal
-                        + "/playerHp" + BattleService.Instance.PlayerHp);
+                        + "/playerHp" + BattleService.Instance.PlayerHpInBattle);
 
                 // 清空后还要等 WinSettleDelayMs 才结算，这里连续推进直到结算完成
                 for (int i = 0; i < 20; i++)
@@ -1559,6 +1624,9 @@ namespace HotUpdateScripts.LocalNet.Testing
                 role.TotalCombat = oldCombat;
                 role.Partners = oldPartners;
                 role.PartnerSlots = oldSlots;
+                role.Equips = oldEquips;
+                if (role.BagData != null && oldBagItems != null)
+                    role.BagData.ItemList = oldBagItems;
                 snapshot.Restore();
                 SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
             }
@@ -1581,6 +1649,8 @@ namespace HotUpdateScripts.LocalNet.Testing
             int oldCombat = role.TotalCombat;
             List<PartnerInfo> oldPartners = role.Partners;
             List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            Dictionary<EquipSlot, ItemInfo> oldEquips = role.Equips;
+            List<ItemInfo> oldBagItems = role.BagData == null ? null : role.BagData.ItemList;
             try
             {
                 BattleService.Instance.Exit();
@@ -1592,6 +1662,9 @@ namespace HotUpdateScripts.LocalNet.Testing
 
                 // 2) 先上阵伙伴（战力来源，首层要求 3000）
                 EnsureBattlePartner(role);
+                // 按当前等级补一套装备，模拟真实玩家练度（不是调游戏难度）
+                int geared = EnsureLevelEquips(role);
+                result.Check(geared == 12, "tower.geared=" + geared);
 
                 // 3) 跳层应被拦，且报的必须是层数问题而不是战力问题
                 //    （原服 TrialTowerMap 用 == 校验，只能打下一层）
@@ -1699,6 +1772,9 @@ namespace HotUpdateScripts.LocalNet.Testing
                 role.TotalCombat = oldCombat;
                 role.Partners = oldPartners;
                 role.PartnerSlots = oldSlots;
+                role.Equips = oldEquips;
+                if (role.BagData != null && oldBagItems != null)
+                    role.BagData.ItemList = oldBagItems;
                 snapshot.Restore();
                 SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
             }
