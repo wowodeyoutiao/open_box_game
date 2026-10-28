@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using JEngine.Core;
 using JEngine.Singleton;
 using pb;
 
@@ -15,7 +16,7 @@ namespace HotUpdateScripts.LocalNet
     ///
     /// 单机取舍：
     /// - 槽位固定 MaxPartnerSlots = 4（对齐原服 MaxPartnerNum），不按 VIP 卡；
-    /// - 伙伴装备 / 宝石暂不接（Equips 保持空数组）。
+    /// - 伙伴装备 / 魂石 / 强化 / 升星 / 合成 / 分解 / 洗练均已接入。
     /// </summary>
     public class PartnerService : SingletonTemplate<PartnerService>
     {
@@ -29,6 +30,16 @@ namespace HotUpdateScripts.LocalNet
         /// - UIExpPool / UIPartnerUp 都按 1..4 取 GetOnePartnerSlotInfo。
         /// </summary>
         public const int FirstPartnerSlotId = 1;
+
+        /// <summary>
+        /// 道具 id + 数量。原服 global.IdNum 的本地等价物，
+        /// 只用于分解/洗练内部聚合奖励，不走协议。
+        /// </summary>
+        private sealed class IdNum
+        {
+            public int Id;
+            public long Num;
+        }
 
         /// <summary>槽位编号是否合法（1..MaxPartnerSlots）。</summary>
         public static bool IsValidSlot(int slotId)
@@ -506,6 +517,521 @@ namespace HotUpdateScripts.LocalNet
             LocalPusher.Instance.PushBagInfoNow();
             resp.Code = 0;
             return resp;
+        }
+
+        // ==================== 伙伴合成 / 分解 / 洗练 ====================
+        // 对齐原服 player.go partnerCompose / partnerDisassemble / partnerReforge。
+        // 注意原服命名有坑：「分解」和「洗练」都不是把伙伴删掉，
+        // 而是把该伙伴**重置回 1 级 0 星**，退还此前投入的星级材料与经验。
+
+        /// <summary>
+        /// 伙伴合成：对齐原服 partnerCompose。消耗 ChipNum 碎片换整卡。
+        /// 已经拥有该配置的伙伴时原服直接报 ErrPartnerInvalid（不会重复给）。
+        /// </summary>
+        public CommonResponse Compose(PartnerComposeRequest req)
+        {
+            var resp = NewResponse(CmdId.C2S_PartnerCompose);
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                resp.Error = "没有角色";
+                return resp;
+            }
+            if (req == null || req.PartnerCfgId <= 0)
+            {
+                resp.Error = "伙伴配置不合法";
+                return resp;
+            }
+
+            int cfgId = (int)req.PartnerCfgId;
+            CFGItem_Partner cfg = GetPartnerCfg(cfgId);
+            if (cfg == null)
+            {
+                resp.Error = "伙伴配置不存在";
+                return resp;
+            }
+
+            // 原服：遍历 p.partners 只要有同 cfg.Cid 就返回 ErrPartnerInvalid
+            if (role.Partners != null)
+            {
+                for (int i = 0; i < role.Partners.Count; i++)
+                {
+                    PartnerInfo owned = role.Partners[i];
+                    if (owned != null && owned.CfgId == cfgId)
+                    {
+                        resp.Error = "已经拥有该伙伴";
+                        return resp;
+                    }
+                }
+            }
+
+            if (cfg.ChipNum == null || cfg.ChipNum.Length == 0)
+            {
+                resp.Error = "该伙伴没有配置碎片需求";
+                return resp;
+            }
+
+            // 先全量校验再扣，避免扣了一半材料却合成失败
+            for (int i = 0; i < cfg.ChipNum.Length; i++)
+            {
+                CFGItem_Partner.StarConsumeItem.Item chip = cfg.ChipNum[i];
+                if (chip == null || chip.key <= 0 || chip.value <= 0)
+                    continue;
+                if (ItemService.CountItem(role, chip.key) < chip.value)
+                {
+                    resp.Error = "伙伴碎片不足";
+                    return resp;
+                }
+            }
+            for (int i = 0; i < cfg.ChipNum.Length; i++)
+            {
+                CFGItem_Partner.StarConsumeItem.Item chip = cfg.ChipNum[i];
+                if (chip == null || chip.key <= 0 || chip.value <= 0)
+                    continue;
+                ItemService.ConsumeItem(role, chip.key, chip.value);
+            }
+
+            int added = AddPartner(role, cfgId);
+            if (added != 1)
+            {
+                // 理论上到不了（上面已排除重复），真到了说明 AddPartner 内部异常，
+                // 此时材料已扣，必须回滚，否则玩家白丢碎片。
+                for (int i = 0; i < cfg.ChipNum.Length; i++)
+                {
+                    CFGItem_Partner.StarConsumeItem.Item chip = cfg.ChipNum[i];
+                    if (chip == null || chip.key <= 0 || chip.value <= 0)
+                        continue;
+                    ItemService.Instance.GrantReward(role, chip.key, chip.value);
+                }
+                resp.Error = "伙伴合成失败";
+                return resp;
+            }
+
+            resp.Code = 0;
+            Refresh(role);
+            LocalPusher.Instance.PushBagInfoNow();
+            Log.Print("[PartnerService] compose cfg=" + cfgId);
+            return resp;
+        }
+
+        /// <summary>
+        /// 伙伴分解：对齐原服 partnerDisassemble。
+        /// 门槛 Quality / Starlevel（config.xml 的 partener/decompose/stage，当前 7 / 5）。
+        /// 退还：星级材料（碎片类按 Rate% 折算成通用碎片 id，非碎片原样退）+ 升级经验珠。
+        /// 之后把伙伴重置成 1 级 0 星、卸下装备、重算技能。
+        /// </summary>
+        public CommonResponse Disassemble(PartnerDisassembleRequest req)
+        {
+            var resp = NewResponse(CmdId.C2S_PartnerDisassemble);
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                resp.Error = "没有角色";
+                return resp;
+            }
+            if (req == null || req.PartnerUid <= 0)
+            {
+                resp.Error = "伙伴不合法";
+                return resp;
+            }
+
+            PartnerInfo partner = FindPartner(role, req.PartnerUid);
+            if (partner == null)
+            {
+                resp.Error = "伙伴不存在";
+                return resp;
+            }
+            CFGItem_Partner cfg = GetPartnerCfg(partner.CfgId);
+            if (cfg == null)
+            {
+                resp.Error = "伙伴配置不存在";
+                return resp;
+            }
+
+            CFG_XMLConfig.XML_Config.XML_Item_Decompose dec = GetDecomposeCfg();
+            if (dec == null)
+            {
+                resp.Error = "伙伴分解配置缺失";
+                return resp;
+            }
+            if (cfg.Quality < dec.quality)
+            {
+                resp.Error = "该品质伙伴不可分解（需品质 " + dec.quality + "）";
+                return resp;
+            }
+            if (partner.Star < dec.starlevel)
+            {
+                resp.Error = "星级不足，无法分解（需 " + dec.starlevel + " 星）";
+                return resp;
+            }
+
+            // 装备必须先能全部收回背包，否则重置后装备会滞留在空槽（原服 changeEquip 会失败）
+            if (!CanTakeOffAllEquips(role, partner, out string bagError))
+            {
+                resp.Error = bagError;
+                return resp;
+            }
+
+            // 星级材料：碎片类按 Rate% 折算成通用碎片，其它原样退
+            List<IdNum> rewards = CollectStarConsumeItems(cfg, partner.Star);
+            for (int i = 0; i < rewards.Count; i++)
+            {
+                IdNum one = rewards[i];
+                if (!IsPartnerFragment(one.Id))
+                    continue;
+                long num = CeilPercent(one.Num, dec.rate);
+                if (num > 0)
+                {
+                    // 原服把这一项**累加**到通用碎片 id 上，而不是替换
+                    rewards[i] = new IdNum { Id = one.Id, Num = 0 };
+                    AddIdNum(rewards, dec.id, num);
+                }
+            }
+
+            // 升级投入的经验 → 经验珠
+            long exp = CFG_Role.GetAllNeedExpToUpLevel(cfg.job, partner.Level);
+            List<IdNum> expItems = ExpToItems(exp);
+            for (int i = 0; i < expItems.Count; i++)
+                AddIdNum(rewards, expItems[i].Id, expItems[i].Num);
+
+            GrantIdNums(role, rewards);
+            ResetPartner(role, partner);
+
+            resp.Code = 0;
+            Refresh(role);
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushSkillSlotNow();
+            Log.Print("[PartnerService] disassemble uid=" + partner.Uid + " cfg=" + partner.CfgId
+                + " rewardKinds=" + rewards.Count);
+            return resp;
+        }
+
+        /// <summary>
+        /// 伙伴洗练（重铸）：对齐原服 partnerReforge。
+        /// 免费重铸只退 Forge.Free.Rate%（当前 70）；付费重铸按品质扣 Charge 道具后退全额。
+        /// 与分解的区别：星级材料**不做碎片折算**，原样退还。
+        /// </summary>
+        public CommonResponse Reforge(PartnerReforgeRequest req)
+        {
+            var resp = NewResponse(CmdId.C2S_PartnerReforge);
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                resp.Error = "没有角色";
+                return resp;
+            }
+            if (req == null || req.PartnerUid <= 0)
+            {
+                resp.Error = "伙伴不合法";
+                return resp;
+            }
+
+            PartnerInfo partner = FindPartner(role, req.PartnerUid);
+            if (partner == null)
+            {
+                resp.Error = "伙伴不存在";
+                return resp;
+            }
+            if (partner.Level <= 1)
+            {
+                resp.Error = "伙伴等级为 1 级，无需洗练";
+                return resp;
+            }
+            CFGItem_Partner cfg = GetPartnerCfg(partner.CfgId);
+            if (cfg == null)
+            {
+                resp.Error = "伙伴配置不存在";
+                return resp;
+            }
+
+            if (!CanTakeOffAllEquips(role, partner, out string bagError))
+            {
+                resp.Error = bagError;
+                return resp;
+            }
+
+            // 付费洗练：按伙伴品质扣对应道具（config.xml partener/forge/charge）
+            int chargeId = 0;
+            int chargeNum = 0;
+            if (!req.IsFree)
+            {
+                // 手写遍历，不用 TryGetValue + ValueTuple out（ILRuntime 对元组 out 参数不友好）
+                Dictionary<int, (int id, int num)> charges = GetForgeChargeDict();
+                if (charges != null)
+                {
+                    foreach (KeyValuePair<int, (int id, int num)> kv in charges)
+                    {
+                        if (kv.Key != cfg.Quality)
+                            continue;
+                        chargeId = kv.Value.id;
+                        chargeNum = kv.Value.num;
+                        break;
+                    }
+                }
+                if (chargeId > 0 && chargeNum > 0
+                    && ItemService.CountItem(role, chargeId) < chargeNum)
+                {
+                    resp.Error = "洗练消耗道具不足";
+                    return resp;
+                }
+                if (chargeId > 0 && chargeNum > 0)
+                    ItemService.ConsumeItem(role, chargeId, chargeNum);
+            }
+
+            List<IdNum> rewards = CollectStarConsumeItems(cfg, partner.Star);
+            long exp = CFG_Role.GetAllNeedExpToUpLevel(cfg.job, partner.Level);
+
+            if (req.IsFree)
+            {
+                int rate = GetForgeFreeRate();
+                for (int i = 0; i < rewards.Count; i++)
+                    rewards[i] = new IdNum { Id = rewards[i].Id, Num = CeilPercent(rewards[i].Num, rate) };
+                exp = CeilPercent(exp, rate);
+            }
+
+            List<IdNum> expItems = ExpToItems(exp);
+            for (int i = 0; i < expItems.Count; i++)
+                AddIdNum(rewards, expItems[i].Id, expItems[i].Num);
+
+            GrantIdNums(role, rewards);
+            ResetPartner(role, partner);
+
+            resp.Code = 0;
+            Refresh(role);
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushSkillSlotNow();
+            Log.Print("[PartnerService] reforge uid=" + partner.Uid + " free=" + req.IsFree
+                + " charge=" + chargeId + "x" + chargeNum);
+            return resp;
+        }
+
+        /// <summary>把伙伴重置回 1 级 0 星：卸装备、清技能槽、重学技能。</summary>
+        private static void ResetPartner(LocalRole role, PartnerInfo partner)
+        {
+            if (role == null || partner == null)
+                return;
+
+            ClearPartnerSkillSlots(role, partner);
+
+            partner.Star = 0;
+            partner.Level = 1;
+
+            PartnerSlotInfo slot = FindSlotByUid(role, partner.Uid);
+            if (slot != null)
+            {
+                // 容量上面已校验过，这里不再拦，保证装备一定回到背包
+                TakeOffAllEquips(role, slot, out _, false);
+            }
+
+            // 原服：par.skills = [] 后重新 learnSkill（星级归 0 后只剩 0 星技能）
+            if (partner.Skills == null)
+                partner.Skills = new List<SkillInfo>();
+            else
+                partner.Skills.Clear();
+            PartnerService.Instance.LearnSkills(partner);
+        }
+
+        /// <summary>汇总 1..star 级所有 StarConsume 消耗（同 id 累加），对齐原服 tmp 聚合。</summary>
+        private static List<IdNum> CollectStarConsumeItems(CFGItem_Partner cfg, int star)
+        {
+            var list = new List<IdNum>();
+            if (cfg == null || cfg.StarConsume == null || star <= 0)
+                return list;
+
+            // 原服 for (i := star; i > 0; i--) 找 v.Id == i，等价于 id <= star
+            for (int s = star; s > 0; s--)
+            {
+                CFGItem_Partner.StarConsumeItem one = FindStarConsume(cfg, s);
+                if (one == null || one.values == null)
+                    continue;
+                for (int i = 0; i < one.values.Length; i++)
+                {
+                    CFGItem_Partner.StarConsumeItem.Item cost = one.values[i];
+                    if (cost == null || cost.key <= 0 || cost.value <= 0)
+                        continue;
+                    AddIdNum(list, cost.key, cost.value);
+                }
+            }
+            return list;
+        }
+
+        /// <summary>经验按「经验珠」面额贪心换算（原服 global.Exp2ExpItems，从大到小取，余数丢弃）。</summary>
+        private static List<IdNum> ExpToItems(long exp)
+        {
+            var list = new List<IdNum>();
+            if (exp <= 0)
+                return list;
+
+            Dictionary<int, int> beads = GetExpBeadDict();
+            if (beads == null || beads.Count == 0)
+            {
+                // 没配经验珠就退经验本身（cfgId 2 走 GrantReward 的 exp 分支）
+                list.Add(new IdNum { Id = 2, Num = exp });
+                return list;
+            }
+
+            var ordered = new List<KeyValuePair<int, int>>(beads);
+            // ⚠️ 不能写 ordered.Sort((a, b) => ...)：ILRuntime 里 Comparison<T> 需要注册委托适配器，
+            //    未注册会直接抛 "Cannot find Delegate Adapter"。这里手写插入排序（面额降序）。
+            for (int i = 1; i < ordered.Count; i++)
+            {
+                KeyValuePair<int, int> cur = ordered[i];
+                int j = i - 1;
+                while (j >= 0 && ordered[j].Value < cur.Value)
+                {
+                    ordered[j + 1] = ordered[j];
+                    j--;
+                }
+                ordered[j + 1] = cur;
+            }
+
+            long left = exp;
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                int num = ordered[i].Value;
+                if (num <= 0)
+                    continue;
+                long count = left / num;
+                left = left % num;
+                if (count > 0)
+                    list.Add(new IdNum { Id = ordered[i].Key, Num = count });
+                if (left <= 0)
+                    break;
+            }
+            return list;
+        }
+
+        private static void AddIdNum(List<IdNum> list, int id, long num)
+        {
+            if (list == null || id <= 0 || num <= 0)
+                return;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].Id == id)
+                {
+                    list[i] = new IdNum { Id = id, Num = list[i].Num + num };
+                    return;
+                }
+            }
+            list.Add(new IdNum { Id = id, Num = num });
+        }
+
+        private static void GrantIdNums(LocalRole role, List<IdNum> list)
+        {
+            if (role == null || list == null)
+                return;
+            for (int i = 0; i < list.Count; i++)
+            {
+                IdNum one = list[i];
+                if (one == null || one.Id <= 0 || one.Num <= 0)
+                    continue;
+                ItemService.Instance.GrantReward(role, one.Id, one.Num);
+            }
+        }
+
+        /// <summary>按百分比放大后向上取整（原服 math.Ceil(num * rate / 100)）。</summary>
+        private static long CeilPercent(long num, int rate)
+        {
+            if (num <= 0 || rate <= 0)
+                return 0;
+            return (long)System.Math.Ceiling(num * (rate / 100.0));
+        }
+
+        /// <summary>item.json 的 Type = 7（伙伴碎片），原服 constant.PartnerFragment。</summary>
+        private static bool IsPartnerFragment(int cfgId)
+        {
+            if (cfgId <= 0)
+                return false;
+            try
+            {
+                CFGItem_Item cfg = CFG_Item.GetById(cfgId);
+                return cfg != null && EquipRuleService.ToInt(cfg.Type) == 7;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>伙伴身上装备能否全部收回背包（不满足时给明确文案）。</summary>
+        private static bool CanTakeOffAllEquips(LocalRole role, PartnerInfo partner, out string error)
+        {
+            error = "";
+            PartnerSlotInfo slot = FindSlotByUid(role, partner.Uid);
+            if (slot == null || slot.Equips == null)
+                return true;
+
+            int count = 0;
+            for (int i = 1; i < slot.Equips.Count; i++)
+            {
+                SlotInfo equip = slot.Equips[i];
+                if (equip != null && equip.Item != null)
+                    count++;
+            }
+            if (count == 0)
+                return true;
+
+            if (!EquipRuleService.CanAddEquipCount(role, count, out error))
+            {
+                if (string.IsNullOrEmpty(error))
+                    error = "背包空间不足，请先清理背包";
+                return false;
+            }
+            return true;
+        }
+
+        private static PartnerSlotInfo FindSlotByUid(LocalRole role, long partnerUid)
+        {
+            if (role == null || role.PartnerSlots == null || partnerUid <= 0)
+                return null;
+            for (int i = 0; i < role.PartnerSlots.Count; i++)
+            {
+                PartnerSlotInfo slot = role.PartnerSlots[i];
+                if (slot != null && slot.PartnerUid == partnerUid)
+                    return slot;
+            }
+            return null;
+        }
+
+        private static CFG_XMLConfig.XML_Config.XML_Item_Decompose GetDecomposeCfg()
+        {
+            try
+            {
+                if (CFG_XMLConfig.xmlConfig != null && CFG_XMLConfig.xmlConfig.Partener != null)
+                    return CFG_XMLConfig.xmlConfig.Partener.decompose;
+            }
+            catch { }
+            return null;
+        }
+
+        private static Dictionary<int, (int id, int num)> GetForgeChargeDict()
+        {
+            try
+            {
+                if (CFG_XMLConfig.xmlConfig != null)
+                    return CFG_XMLConfig.xmlConfig.PartenerPayRecastingDic;
+            }
+            catch { }
+            return null;
+        }
+
+        private static Dictionary<int, int> GetExpBeadDict()
+        {
+            try
+            {
+                if (CFG_XMLConfig.xmlConfig != null)
+                    return CFG_XMLConfig.xmlConfig.PartenerEXPBeadDic;
+            }
+            catch { }
+            return null;
+        }
+
+        private static int GetForgeFreeRate()
+        {
+            try
+            {
+                if (CFG_XMLConfig.xmlConfig != null && CFG_XMLConfig.xmlConfig.Partener != null)
+                    return CFG_XMLConfig.xmlConfig.Partener.forgeRate;
+            }
+            catch { }
+            return 100;
         }
 
         /// <summary>

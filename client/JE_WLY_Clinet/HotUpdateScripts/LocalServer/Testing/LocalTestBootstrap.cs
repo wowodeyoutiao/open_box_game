@@ -144,6 +144,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunPartnerGem());
                 if (scenario == "all" || scenario == "partner_upgrade")
                     cases.Add(RunPartnerUpgrade());
+                if (scenario == "all" || scenario == "partner_reset")
+                    cases.Add(RunPartnerReset());
                 if (scenario == "all" || scenario == "home_afk")
                     cases.Add(RunHomeAFKReset());
 
@@ -3493,14 +3495,28 @@ namespace HotUpdateScripts.LocalNet.Testing
                     Info = new List<ComposeInfo> { new ComposeInfo { Uid = gemUid, Num = 3 } },
                 });
                 result.Check(ok != null && ok.Code == 0, "compose.ok=" + (ok == null ? "null" : ok.Error));
-                result.Check(ok != null && ok.NewConpose.Count == 1
-                    && ok.NewConpose[0].Uid == 10002 && ok.NewConpose[0].Num == 1,
-                    "compose.produced=" + (ok == null || ok.NewConpose.Count == 0
-                        ? "none" : ok.NewConpose[0].Uid + "x" + ok.NewConpose[0].Num));
+                // ⚠️ 产物 id 是随机的：CFG_Compose.Produced 里 5 种自然系（红/风/水/火/土）
+                //    的 2 级魂石都在同一个 id 列表里，RollProduced 会 _rng.Next(len) 取一个。
+                //    所以这里**不能写死 10002**（曾因此偶发假红：拿到了 10017「2级红魂石(风)」）。
+                //    改为校验「产出属于 2 级魂石这一档且数量为 1」。
+                int productId = ok == null || ok.NewConpose.Count == 0 ? 0 : (int)ok.NewConpose[0].Uid;
+                result.Check(ok != null && ok.NewConpose.Count == 1 && ok.NewConpose[0].Num == 1,
+                    "compose.produced=" + (productId <= 0
+                        ? "none" : productId + "x" + ok.NewConpose[0].Num));
+                bool productInTier = false;
+                try
+                {
+                    CFGItem_Item productCfg = CFG_Item.GetById(productId);
+                    productInTier = productCfg != null
+                        && EquipRuleService.ToInt(productCfg.Type) == 6
+                        && productCfg.itemlevel == 2;
+                }
+                catch { productInTier = false; }
+                result.Check(productInTier, "compose.producedTier=" + productId);
                 result.Check(ItemService.CountItem(role, 10001) == 0,
                     "compose.materialCost=" + ItemService.CountItem(role, 10001));
-                result.Check(ItemService.CountItem(role, 10002) == 1,
-                    "compose.productGot=" + ItemService.CountItem(role, 10002));
+                result.Check(productId > 0 && ItemService.CountItem(role, productId) == 1,
+                    "compose.productGot=" + ItemService.CountItem(role, productId));
                 result.Check(role.Coin == 0, "compose.goldCost=" + role.Coin);
 
                 // 5) 装备合成失败分支：装备 SuccessRate=9000，强制 weight=9999 → 必败。
@@ -4591,6 +4607,203 @@ namespace HotUpdateScripts.LocalNet.Testing
             {
                 EquipService.Instance.ForcedStarWeight = oldForcedWeight;
                 BattleService.Instance.Exit();
+                role.PartnerSlots = oldSlots;
+                if (role.BagData != null && oldBag != null)
+                    role.BagData.ItemList = oldBag;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 伙伴合成 / 分解 / 洗练。
+        ///
+        /// 数值来自配置：
+        ///   partner 1（哈迪曼）Q7 job11，ChipNum 40034×120；
+        ///   StarConsume 1..5 星各 40034×120 + 金币 1/2/3/4/5 万，共 600 碎片 + 15 万金币；
+        ///   config.xml partener/decompose/stage → quality=7 starlevel=5 rate=50 id=95；
+        ///   config.xml partener/forge/free rate=70，charge quality=7 → id 5 × 2500；
+        ///   job11 升到 40 级共 12,851,500 经验 → 12 个传奇经验珠(34) + 1 个无双(33) + 3 个大型(32)
+        ///                                        + 1 个中型(31) + 1 个微型(94)。
+        /// </summary>
+        private static CaseResult RunPartnerReset()
+        {
+            var result = new CaseResult("partner_reset");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            List<PartnerInfo> oldPartners = role.Partners;
+            List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
+            try
+            {
+                BattleService.Instance.Exit();
+                role.Level = 40;
+                role.Partners = new List<PartnerInfo>();
+                role.PartnerSlots = new List<PartnerSlotInfo>();
+                PartnerService.Instance.EnsureSlots(role);
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+                role.BagData.ItemList = new List<ItemInfo>();
+
+                // ---------- 1) 合成：碎片不足 ----------
+                var lackChip = PartnerService.Instance.Compose(
+                    new PartnerComposeRequest { PartnerCfgId = 1 });
+                result.Check(lackChip != null && lackChip.Code != 0
+                    && lackChip.Error == "伙伴碎片不足",
+                    "pr.composeLack=" + (lackChip == null ? "null" : lackChip.Error));
+                result.Check(role.Partners.Count == 0,
+                    "pr.composeLackCount=" + role.Partners.Count);
+
+                // ---------- 2) 合成成功：扣 120 碎片 ----------
+                ItemService.Instance.GrantReward(role, 40034, 200);
+                var composed = PartnerService.Instance.Compose(
+                    new PartnerComposeRequest { PartnerCfgId = 1 });
+                result.Check(composed != null && composed.Code == 0,
+                    "pr.compose=" + (composed == null ? "null" : composed.Code + "/" + composed.Error));
+                result.Check(role.Partners.Count == 1, "pr.composeCount=" + role.Partners.Count);
+                result.Check(ItemService.CountItem(role, 40034) == 80,
+                    "pr.composeChip=" + ItemService.CountItem(role, 40034));
+
+                // ---------- 3) 重复合成被拒，且不扣碎片 ----------
+                var dupCompose = PartnerService.Instance.Compose(
+                    new PartnerComposeRequest { PartnerCfgId = 1 });
+                result.Check(dupCompose != null && dupCompose.Code != 0
+                    && dupCompose.Error == "已经拥有该伙伴",
+                    "pr.composeDup=" + (dupCompose == null ? "null" : dupCompose.Error));
+                result.Check(ItemService.CountItem(role, 40034) == 80,
+                    "pr.composeDupChip=" + ItemService.CountItem(role, 40034));
+
+                PartnerInfo partner = role.Partners[0];
+
+                // ---------- 4) 星级不足（0 星 < 5 星门槛）不能分解 ----------
+                var lowStar = PartnerService.Instance.Disassemble(
+                    new PartnerDisassembleRequest { PartnerUid = partner.Uid });
+                result.Check(lowStar != null && lowStar.Code != 0
+                    && lowStar.Error == "星级不足，无法分解（需 5 星）",
+                    "pr.disStar=" + (lowStar == null ? "null" : lowStar.Error));
+
+                // ---------- 5) 上阵 + 穿装备 + 拉到 5 星 40 级 ----------
+                partner.Level = 40;
+                partner.Star = 5;
+                PartnerService.Instance.Combat(
+                    new PartnerCombatRequest { SlotId = 1, PartnerUid = partner.Uid });
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long weaponUid = 0;
+                for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                {
+                    ItemInfo bagItem = role.BagData.ItemList[i];
+                    if (bagItem != null && bagItem.CfgId == 101)
+                    {
+                        weaponUid = bagItem.Uid;
+                        break;
+                    }
+                }
+                var equip = ItemService.Instance.ChangeEquip(
+                    TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                    {
+                        OpType = 1,
+                        Slot = EquipSlot.Weapon,
+                        ItemUid = weaponUid,
+                        PartnerSlotId = 1,
+                    })) as ChangeEquipResponse;
+                result.Check(equip != null && equip.Code == 0,
+                    "pr.equip=" + (equip == null ? "null" : equip.Code + "/" + equip.Error));
+
+                // ---------- 6) 分解：600 碎片 × 50% → 通用碎片 95 × 300 ----------
+                long coinBefore = role.Coin;
+                var dis = PartnerService.Instance.Disassemble(
+                    new PartnerDisassembleRequest { PartnerUid = partner.Uid });
+                result.Check(dis != null && dis.Code == 0,
+                    "pr.dis=" + (dis == null ? "null" : dis.Code + "/" + dis.Error));
+                result.Check(partner.Star == 0 && partner.Level == 1,
+                    "pr.disReset=" + partner.Star + "/" + partner.Level);
+                result.Check(ItemService.CountItem(role, 95) == 300,
+                    "pr.disFragment=" + ItemService.CountItem(role, 95));
+                // 碎片本体不退还（已折成通用碎片），仍是最初剩下的 80
+                result.Check(ItemService.CountItem(role, 40034) == 80,
+                    "pr.disChipKept=" + ItemService.CountItem(role, 40034));
+                // 金币 1+2+3+4+5 万 = 15 万原样退
+                result.Check(role.Coin - coinBefore == 150000,
+                    "pr.disGold=" + (role.Coin - coinBefore));
+                // 升级经验 → 经验珠
+                result.Check(ItemService.CountItem(role, 34) == 12,
+                    "pr.disExpBead=" + ItemService.CountItem(role, 34));
+
+                PartnerSlotInfo slotAfter = role.FindPartnerSlot(1);
+                bool weaponBack = false;
+                for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                {
+                    ItemInfo bagItem = role.BagData.ItemList[i];
+                    if (bagItem != null && bagItem.Uid == weaponUid)
+                    {
+                        weaponBack = true;
+                        break;
+                    }
+                }
+                result.Check(weaponBack
+                    && slotAfter != null && slotAfter.Equips != null
+                    && slotAfter.Equips[1].Item == null,
+                    "pr.disEquipBack=" + weaponBack);
+
+                // ---------- 7) 洗练：1 级不能洗 ----------
+                var lowLv = PartnerService.Instance.Reforge(
+                    new PartnerReforgeRequest { PartnerUid = partner.Uid, IsFree = true });
+                result.Check(lowLv != null && lowLv.Code != 0
+                    && lowLv.Error == "伙伴等级为 1 级，无需洗练",
+                    "pr.reforgeLowLv=" + (lowLv == null ? "null" : lowLv.Error));
+
+                // ---------- 8) 免费洗练：退 70% ----------
+                partner.Level = 40;
+                partner.Star = 5;
+                long chipBeforeFree = ItemService.CountItem(role, 40034);
+                var freeReforge = PartnerService.Instance.Reforge(
+                    new PartnerReforgeRequest { PartnerUid = partner.Uid, IsFree = true });
+                result.Check(freeReforge != null && freeReforge.Code == 0,
+                    "pr.reforgeFree=" + (freeReforge == null ? "null" : freeReforge.Code + "/" + freeReforge.Error));
+                result.Check(partner.Star == 0 && partner.Level == 1,
+                    "pr.reforgeFreeReset=" + partner.Star + "/" + partner.Level);
+                // 600 × 70% = 420（洗练不折算碎片，原样退 40034）
+                result.Check(ItemService.CountItem(role, 40034) - chipBeforeFree == 420,
+                    "pr.reforgeFreeChip=" + (ItemService.CountItem(role, 40034) - chipBeforeFree));
+
+                // ---------- 9) 付费洗练：扣元宝退全额 ----------
+                partner.Level = 40;
+                partner.Star = 5;
+                ItemService.Instance.GrantReward(role, 5, 10000);
+                long couponBefore = role.Coupon;
+                long chipBeforePaid = ItemService.CountItem(role, 40034);
+                var paidReforge = PartnerService.Instance.Reforge(
+                    new PartnerReforgeRequest { PartnerUid = partner.Uid, IsFree = false });
+                result.Check(paidReforge != null && paidReforge.Code == 0,
+                    "pr.reforgePaid=" + (paidReforge == null ? "null" : paidReforge.Code + "/" + paidReforge.Error));
+                result.Check(couponBefore - role.Coupon == 2500,
+                    "pr.reforgeCharge=" + (couponBefore - role.Coupon));
+                result.Check(ItemService.CountItem(role, 40034) - chipBeforePaid == 600,
+                    "pr.reforgePaidChip=" + (ItemService.CountItem(role, 40034) - chipBeforePaid));
+
+                // ---------- 10) 不存在 / 非法参数 ----------
+                var noPartner = PartnerService.Instance.Disassemble(
+                    new PartnerDisassembleRequest { PartnerUid = 99999999 });
+                result.Check(noPartner != null && noPartner.Code != 0
+                    && noPartner.Error == "伙伴不存在",
+                    "pr.disMissing=" + (noPartner == null ? "null" : noPartner.Error));
+            }
+            catch (System.Exception e)
+            {
+                result.Fail(e.ToString());
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.Partners = oldPartners;
                 role.PartnerSlots = oldSlots;
                 if (role.BagData != null && oldBag != null)
                     role.BagData.ItemList = oldBag;

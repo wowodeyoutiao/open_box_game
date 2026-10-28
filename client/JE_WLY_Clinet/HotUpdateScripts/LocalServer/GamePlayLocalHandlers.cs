@@ -29,9 +29,9 @@ namespace HotUpdateScripts.LocalNet
             LocalServer.Reg(dict, CmdId.C2S_GemstoneChangeAll, OnGemstoneChangeAll);
 
             // 伙伴
-            RegUnsupported(dict, CmdId.C2S_PartnerCompose);
-            RegUnsupported(dict, CmdId.C2S_PartnerDisassemble);
-            RegUnsupported(dict, CmdId.C2S_PartnerReforge);
+            LocalServer.Reg(dict, CmdId.C2S_PartnerCompose, OnPartnerCompose);
+            LocalServer.Reg(dict, CmdId.C2S_PartnerDisassemble, OnPartnerDisassemble);
+            LocalServer.Reg(dict, CmdId.C2S_PartnerReforge, OnPartnerReforge);
 
             // 宠物
             LocalServer.Reg(dict, CmdId.C2S_PetLevel, OnPetLevel);
@@ -174,6 +174,66 @@ namespace HotUpdateScripts.LocalNet
                 };
             }
             return EquipService.Instance.Stars(request);
+        }
+
+        /// <summary>伙伴合成：对齐原服 Manager.PartnerCompose（碎片 → 整卡）。</summary>
+        private static object OnPartnerCompose(byte[] req)
+        {
+            PartnerComposeRequest request;
+            try
+            {
+                request = TCPClientMgr.ProtoDeSerialize<PartnerComposeRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new CommonResponse
+                {
+                    Code = -1,
+                    Error = "伙伴合成请求解析失败: " + e.Message,
+                    RequestCmdId = (uint)CmdId.C2S_PartnerCompose,
+                };
+            }
+            return PartnerService.Instance.Compose(request);
+        }
+
+        /// <summary>伙伴分解：对齐原服 Manager.PartnerDisassemble（重置回 1 级 0 星并退料）。</summary>
+        private static object OnPartnerDisassemble(byte[] req)
+        {
+            PartnerDisassembleRequest request;
+            try
+            {
+                request = TCPClientMgr.ProtoDeSerialize<PartnerDisassembleRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new CommonResponse
+                {
+                    Code = -1,
+                    Error = "伙伴分解请求解析失败: " + e.Message,
+                    RequestCmdId = (uint)CmdId.C2S_PartnerDisassemble,
+                };
+            }
+            return PartnerService.Instance.Disassemble(request);
+        }
+
+        /// <summary>伙伴洗练：对齐原服 Manager.PartnerReforge（免费退 70%，付费退全额）。</summary>
+        private static object OnPartnerReforge(byte[] req)
+        {
+            PartnerReforgeRequest request;
+            try
+            {
+                request = TCPClientMgr.ProtoDeSerialize<PartnerReforgeRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new CommonResponse
+                {
+                    Code = -1,
+                    Error = "伙伴洗练请求解析失败: " + e.Message,
+                    RequestCmdId = (uint)CmdId.C2S_PartnerReforge,
+                };
+            }
+            return PartnerService.Instance.Reforge(request);
         }
 
         /// <summary>魂石镶嵌 / 拆卸，对齐原服 Manager.GemstoneChange。</summary>

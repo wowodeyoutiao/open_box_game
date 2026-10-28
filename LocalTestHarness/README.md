@@ -82,6 +82,7 @@ partner_item 伙伴整卡道具（Type 8）拦截 / 重复转碎片
 partner_equip 伙伴装备：穿脱 / 一键 / 按伙伴等级校验 / 下阵脱装备 / 防误分解 / 存档
 partner_gem  伙伴魂石镶嵌：槽位独立 / 槽位数按伙伴等级 / 拆卸回包
 partner_upgrade 伙伴装备强化升星：上限按伙伴等级 / 槽位进度存档
+partner_reset 伙伴合成 / 分解 / 洗练：碎片换整卡、按品质星级门槛重置并退料、免费 70% 与付费全额
 skill      技能自动学习 / 槽位
 skill_action 技能升级 / 进阶 / 换槽
 skill_advance 技能进阶：档位配置 / 材料校验 / 伤害加成
@@ -122,6 +123,19 @@ all        全部场景
    LocalTestBatchRunner 在 delayCall 里调 EditorApplication.Exit，batchmode 下可能卡死不退。
    报告已写出但进程还活着 ⇒ 表现是「测试早就 PASS 了，脚本却一直等着」。
    runner 里已有 Stop-Process 兜底；若手工跑，看到报告就手动杀 Unity。
+
+④ 热更代码里别用 lambda / 委托
+   例：list.Sort((a, b) => ...) 会抛
+   KeyNotFoundException: Cannot find Delegate Adapter for: Xxx/<>c.<Method>b__N_M(...)
+   ILRuntime 需要 AppDomain.DelegateManager 预注册适配器。改成手写排序/显式循环。
+
+⑤ 测试用例必须自己 catch
+   只写 try/finally 不写 catch 时，异常会冒到 TryRun 的外层 catch，
+   那里会新建一个空 CaseResult ⇒ **本次已通过的断言全部丢失**，报告里只剩一条 FAIL。
+   另外 ④ 那类委托异常在这个位置常常表现为
+   「System.StackOverflowException at RuntimeStack.InitializeFrame」，看着像配置加载递归，
+   实际是 CLRMethod.Invoke 处理异常时把栈耗尽 —— 别顺着栈溢出方向查。
+   排查手法：在用例里插 Log.Print("[xx] stepN") 逐步打点。
 ```
 
 ## 正式包
