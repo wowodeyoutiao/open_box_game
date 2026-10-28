@@ -131,6 +131,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunRelic());
                 if (scenario == "all" || scenario == "sign")
                     cases.Add(RunSign());
+                if (scenario == "all" || scenario == "item_use")
+                    cases.Add(RunItemUse());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3098,6 +3100,86 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 使用道具：走 itemuse.json。
+        /// 验证 可用道具生效 / 数量正确扣减 / 不可使用的道具被拒。
+        /// </summary>
+        private static CaseResult RunItemUse()
+        {
+            var result = new CaseResult("item_use");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            long oldBox = role.TreasuerBox;
+            try
+            {
+                role.Level = Math.Max(role.Level, 20);
+
+                // itemuse.json 11 = 小型宝箱，给 14（宝箱）x10
+                ItemService.Instance.GrantReward(role, 11, 1);
+                long useUid = FindBagUidByCfg(role, 11);
+                result.Check(useUid > 0, "item_use.hasItem=" + useUid);
+                if (useUid <= 0)
+                    return result;
+
+                long boxBefore = role.TreasuerBox;
+                object raw = ItemService.Instance.ItemUse(TCPClientMgr.ProtoSerialize(new ItemUseRequest
+                {
+                    ItemUid = useUid,
+                    Num = 1,
+                }));
+                var resp = raw as ItemUseResponse;
+                result.Check(resp != null && resp.Code == 0,
+                    "item_use.ok=" + (resp == null ? "null" : resp.Code + "/" + resp.Error));
+                result.Check(role.TreasuerBox == boxBefore + 10,
+                    "item_use.gain=" + boxBefore + "->" + role.TreasuerBox);
+                result.Check(FindBagUidByCfg(role, 11) == 0,
+                    "item_use.consumed");
+
+                // 不可使用的道具（装备 101）应被拒
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long equipUid = FindBagUidByCfg(role, 101);
+                if (equipUid > 0)
+                {
+                    object raw2 = ItemService.Instance.ItemUse(TCPClientMgr.ProtoSerialize(new ItemUseRequest
+                    {
+                        ItemUid = equipUid,
+                        Num = 1,
+                    }));
+                    var resp2 = raw2 as ItemUseResponse;
+                    result.Check(resp2 != null && resp2.Code != 0,
+                        "item_use.rejectEquip=" + (resp2 == null ? "null" : resp2.Code));
+                }
+            }
+            finally
+            {
+                role.TreasuerBox = oldBox;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
+        /// <summary>按 cfgId 在背包里找道具 uid（没有返回 0）。</summary>
+        private static long FindBagUidByCfg(LocalRole role, int cfgId)
+        {
+            if (role == null || role.BagData == null || role.BagData.ItemList == null)
+                return 0;
+            for (int i = 0; i < role.BagData.ItemList.Count; i++)
+            {
+                ItemInfo it = role.BagData.ItemList[i];
+                if (it != null && it.CfgId == cfgId)
+                    return it.Uid;
+            }
+            return 0;
+        }
+
         private static CaseResult RunSign()
         {
             var result = new CaseResult("sign");

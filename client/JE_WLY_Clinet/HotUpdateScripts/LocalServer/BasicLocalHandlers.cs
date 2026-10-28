@@ -26,6 +26,7 @@ namespace HotUpdateScripts.LocalNet
             LocalServer.Reg(dict, CmdId.C2S_ChangeEquip, OnChangeEquip);
             LocalServer.Reg(dict, CmdId.C2S_EquipBest, OnEquipBest);
             LocalServer.Reg(dict, CmdId.C2S_ItemDestroy, OnItemDestroy);
+            LocalServer.Reg(dict, CmdId.C2S_ItemUse, OnItemUse);
             LocalServer.Reg(dict, CmdId.C2S_ItemDisassembly, OnItemDisassembly);
             LocalServer.Reg(dict, CmdId.C2S_AutoDisassembly, OnAutoDisassembly);
 
@@ -136,6 +137,7 @@ namespace HotUpdateScripts.LocalNet
         private static object OnChangeEquip(byte[] req) { return ItemService.Instance.ChangeEquip(req); }
         private static object OnEquipBest(byte[] req) { return ItemService.Instance.EquipBest(req); }
         private static object OnItemDestroy(byte[] req) { return ItemService.Instance.ItemDestroy(req); }
+        private static object OnItemUse(byte[] req) { return ItemService.Instance.ItemUse(req); }
         private static object OnItemDisassembly(byte[] req) { return ItemService.Instance.ItemDisassembly(req); }
         private static object OnAutoDisassembly(byte[] req) { return ItemService.Instance.AutoDisassembly(req); }
         private static object OnBattleJoin(byte[] req)

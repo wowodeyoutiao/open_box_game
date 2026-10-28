@@ -30,6 +30,7 @@ public class CFG_All
         typeof(CFG_Role),
         typeof(CFG_Room),
         typeof(CFG_Sign),
+        typeof(CFG_ItemUse),
         typeof(CFG_Skill),
         typeof(CFG_SkillEffect),
         typeof(CFG_Store),

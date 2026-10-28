@@ -757,6 +757,105 @@ namespace HotUpdateScripts.LocalNet
             return response;
         }
 
+        /// <summary>
+        /// 使用道具（对齐原服 Manager.ItemUse）。
+        ///
+        /// 走 itemuse.json：只有配在这张表里的道具能主动使用，
+        /// 效果 = Givegoods（每用一个发一份）。
+        /// 不能使用的道具（装备/材料/魂石）返回错误，避免出现"点了没反应"。
+        /// </summary>
+        public object ItemUse(byte[] req)
+        {
+            ItemUseRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<ItemUseRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new ItemUseResponse
+                {
+                    Code = -1,
+                    Error = "道具使用请求解析失败: " + e.Message,
+                };
+            }
+
+            LocalRole role = LocalData.Instance.Current;
+            var response = new ItemUseResponse { Code = 0, Error = "" };
+            if (role == null)
+            {
+                response.Code = -1;
+                response.Error = "没有角色";
+                return response;
+            }
+            if (request == null || request.ItemUid <= 0 || request.Num <= 0)
+            {
+                response.Code = -1;
+                response.Error = "参数错误";
+                return response;
+            }
+
+            ItemInfo item = FindInBag(role.BagData, request.ItemUid);
+            if (item == null || item.Num < request.Num)
+            {
+                response.Code = -2;
+                response.Error = "道具数量不足";
+                return response;
+            }
+
+            CFGItem_Item cfg;
+            try { cfg = CFG_Item.GetById(item.CfgId); }
+            catch { cfg = null; }
+            if (cfg == null)
+            {
+                response.Code = -2;
+                response.Error = "道具配置不存在";
+                return response;
+            }
+
+            // 原服：p.level < itemCfg.Levellimit 时拒绝
+            if (role.Level < cfg.Levellimit)
+            {
+                response.Code = -3;
+                response.Error = "等级不足";
+                return response;
+            }
+
+            CFGItem_ItemUse useCfg = CFG_ItemUse.GetById(item.CfgId);
+            if (useCfg == null || useCfg.Givegoods == null || useCfg.Givegoods.Length == 0)
+            {
+                response.Code = -5;
+                response.Error = "该道具无法使用";
+                return response;
+            }
+
+            // 一次性使用多个时，效果按数量翻倍（原服 GiveGoods × useNum）
+            var rewards = new Dictionary<int, long>();
+            for (int i = 0; i < useCfg.Givegoods.Length; i++)
+            {
+                CFGItem_ItemUse.GiveGoodsItem give = useCfg.Givegoods[i];
+                if (give == null || give.id <= 0 || give.num <= 0)
+                    continue;
+                long total = (long)give.num * request.Num;
+                long exist;
+                rewards[give.id] = rewards.TryGetValue(give.id, out exist) ? exist + total : total;
+            }
+            if (rewards.Count == 0)
+            {
+                response.Code = -5;
+                response.Error = "该道具无法使用";
+                return response;
+            }
+
+            item.Num -= request.Num;
+            if (item.Num <= 0)
+                role.BagData.ItemList.Remove(item);
+
+            ApplyRewards(role, rewards);
+            AfterItemChanged(role);
+            return response;
+        }
+
         public object AutoDisassembly(byte[] req)
         {
             AutoDisassemblyRequest request;
