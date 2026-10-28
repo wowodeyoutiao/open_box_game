@@ -19,7 +19,17 @@ public class CFGItem_EquipStar : CFGItemBase
 
     public int StarLevel;
 
+    /// <summary>升星成功概率（万分比，10000 = 100%）。</summary>
     public int SuccessRate;
+
+    /// <summary>
+    /// 升星失败后掉到的星级（原服 stars() 里 `equipsInfo.Stars = StarsNeed.FailLevel`）。
+    /// 注意不是「掉几级」，而是「掉到第几星」。
+    /// </summary>
+    public int FailLevel;
+
+    /// <summary>配置里的失败降级列，原服逻辑未使用（只进埋点），保留以对齐配置。</summary>
+    public int DecLevel;
 
     public Material_Item[] MaterialID;
 

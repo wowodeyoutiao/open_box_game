@@ -20,6 +20,24 @@ public class CFGItem_Compose : CFGItemBase
     }
     public NeedGoldItem NeedGold;
 
+    /// <summary>
+    /// 产出结果（对齐原服 ComposeConfig.Produced）。
+    ///
+    /// 多段按 ratio 累加分段，段内随机取一个 id：
+    ///   魂石合成 ComposeID 30..85 → 9000 段 = 高一级「无自然系」单 id，
+    ///                              1000 段 = 高一级 4 种自然系随机一个
+    /// ⚠️ 原来这个字段没定义（json 有、类里没有），解析出来永远是 null，
+    ///    合成必然算不出产出，属于 48 节配置对账扫出来的缺口。
+    /// </summary>
+    public ProducedItem[] Produced;
+
+    [System.Serializable]
+    public class ProducedItem
+    {
+        public int[] id;
+        public int ratio;
+    }
+
     public decimal NeedNum { get; set; }
     public decimal SuccessRate { get; set; }
 

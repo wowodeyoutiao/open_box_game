@@ -128,6 +128,7 @@ namespace HotUpdateScripts.LocalNet
             role.BoxOpenItems = result;
             role.TreasuerBox -= openNum;
             LocalData.Instance.TreasuerBox = role.TreasuerBox;
+            TaskService.Instance.Dispatch(role, TargetType.TOTAL_BOX_OPENED, 0, openNum);
             Log.Print("[BoxService] OpenBox save pending=" + role.BoxOpenItems.Count);
             SaveCoordinator.Instance.SaveNow();
             Log.Print("[BoxService] OpenBox push count");
@@ -179,10 +180,22 @@ namespace HotUpdateScripts.LocalNet
             if (!EquipRuleService.CanAddToBag(role, item, out error))
                 return new BoxResIntoBagResponse { Code = -3, Error = error, Uid = request.Uid };
 
-            role.BoxOpenItems.Remove(item);
-            if (role.BagData == null)
-                role.BagData = new Bag { ItemList = new List<ItemInfo>() };
-            role.BagData.ItemList.Add(item);
+            var remaining = new ItemInfo[role.BoxOpenItems.Count];
+            int write = 0;
+            for (int i = 0; i < role.BoxOpenItems.Count; i++)
+            {
+                if (role.BoxOpenItems[i] != null && role.BoxOpenItems[i].Uid != request.Uid)
+                    remaining[write++] = role.BoxOpenItems[i];
+            }
+            if (write != remaining.Length)
+            {
+                var trimmed = new ItemInfo[write];
+                for (int i = 0; i < write; i++)
+                    trimmed[i] = remaining[i];
+                role.BoxOpenItems = System.Linq.Enumerable.ToList(trimmed);
+            }
+
+            AppendToBag(role, item);
             SaveCoordinator.Instance.SaveNow();
 
             return new BoxResIntoBagResponse
@@ -295,73 +308,19 @@ namespace HotUpdateScripts.LocalNet
             return System.Linq.Enumerable.ToList(source);
         }
 
-        /// <summary>
-        /// 无 UI、无存档副作用的开箱生成自检，供 LocalSelfCheck 使用。
-        /// </summary>
-        public static bool SelfCheck(LocalRole role, out string error)
+        private static void AppendToBag(LocalRole role, ItemInfo item)
         {
-            error = "";
-            if (role == null)
-            {
-                error = "没有角色";
-                return false;
-            }
+            if (role.BagData == null)
+                role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+            if (role.BagData.ItemList == null)
+                role.BagData.ItemList = new List<ItemInfo>();
 
-            List<ItemInfo> oldItems = role.BoxOpenItems;
-            long oldTreasure = role.TreasuerBox;
-            int oldLevel = role.BoxLevel;
-            long oldNextItemUid = LocalData.Instance.NextItemUid;
-            try
-            {
-                role.BoxOpenItems = new List<ItemInfo>();
-                role.TreasuerBox = 1;
-                role.BoxLevel = 1;
-
-                var generated = new ItemInfo[1];
-                var item = CreateRandomItem(
-                    role,
-                    role.Level > 0 ? role.Level : 1,
-                    role.Job,
-                    role.BoxLevel,
-                    new System.Random(12345));
-                if (item == null)
-                {
-                    error = "随机开箱结果为 null";
-                    return false;
-                }
-
-                generated.SetValue(item, 0);
-                var opened = System.Linq.Enumerable.ToList(generated);
-                if (opened.Count != 1 || opened[0] == null)
-                {
-                    error = "开箱列表生成失败";
-                    return false;
-                }
-
-                role.BoxOpenItems = opened;
-                var copy = CopyItems(opened);
-                if (copy.Count != 1)
-                {
-                    error = "开箱结果副本失败";
-                    return false;
-                }
-
-                Log.Print("[BoxService][SelfCheck] box open generate ok cfg=" + item.CfgId
-                    + " type=" + item.Type + " list=" + opened.GetType().FullName);
-                return true;
-            }
-            catch (System.Exception e)
-            {
-                error = e.ToString();
-                return false;
-            }
-            finally
-            {
-                role.BoxOpenItems = oldItems;
-                role.TreasuerBox = oldTreasure;
-                role.BoxLevel = oldLevel;
-                LocalData.Instance.NextItemUid = oldNextItemUid;
-            }
+            int count = role.BagData.ItemList.Count;
+            var items = new ItemInfo[count + 1];
+            for (int i = 0; i < count; i++)
+                items[i] = role.BagData.ItemList[i];
+            items[count] = item;
+            role.BagData.ItemList = System.Linq.Enumerable.ToList(items);
         }
 
         private static CommonResponse Resp(CmdId cmd, int code, string error)

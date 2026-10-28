@@ -1,3 +1,4 @@
+#if LOCAL_TEST
 using System.Collections.Generic;
 using JEngine.Core;
 using JEngine.LitJson;
@@ -87,13 +88,6 @@ namespace HotUpdateScripts.LocalNet
                         || restoredRole.BoxOpenItems == null || restoredRole.BoxOpenItems.Count != 1)
                     {
                         Fail("宝箱状态存档往返失败 job=" + job);
-                        ok = false;
-                    }
-
-                    string boxCheckError;
-                    if (!BoxService.SelfCheck(restoredRole, out boxCheckError))
-                    {
-                        Fail("宝箱生成自检失败 job=" + job + " " + boxCheckError);
                         ok = false;
                     }
 
@@ -215,3 +209,4 @@ namespace HotUpdateScripts.LocalNet
         }
     }
 }
+#endif

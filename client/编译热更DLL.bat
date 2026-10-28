@@ -2,7 +2,11 @@
 setlocal
 cd /d "%~dp0"
 set "NOPAUSE="
+set "TESTBUILD="
+:parse_args
 if /I "%~1"=="--no-pause" set "NOPAUSE=1"
+if /I "%~1"=="--test" set "TESTBUILD=1"
+if not "%~1"=="" shift & goto parse_args
 
 set "MSB=E:\DevelopTools\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
 set "PROJ=JE_WLY_Clinet\HotUpdateScripts\HotUpdateScripts.csproj"
@@ -20,7 +24,12 @@ if not exist "%PROJ%" goto no_proj
 echo [INFO] Close Unity before building, or the dll may be locked.
 echo.
 echo [1/2] compiling ...
-"%MSB%" "%PROJ%" /p:Configuration=Debug /v:minimal /nologo
+if defined TESTBUILD (
+  echo [TEST BUILD] LOCAL_TEST enabled
+  "%MSB%" "%PROJ%" /p:Configuration=Debug /p:DefineConstants="DEBUG;LOCAL_TEST" /v:minimal /nologo
+) else (
+  "%MSB%" "%PROJ%" /p:Configuration=Debug /v:minimal /nologo
+)
 if errorlevel 1 goto build_fail
 
 echo.

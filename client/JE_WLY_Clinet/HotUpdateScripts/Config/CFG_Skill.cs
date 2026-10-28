@@ -67,7 +67,49 @@ public class CFGItem_Skill : CFGItemBase
 
     public int PreMark;
 
+    /// <summary>
+    /// 技能伤害加成。格式 [{属性id: 数值}, ...]，对应原服 skillCfg.Effect。
+    /// 属性 id 走 pb.Attribute，百分比类以 10000 为基数（见原服 BaseRate）。
+    /// </summary>
+    public Dictionary<string, int>[] SkillEffect;
 
+    /// <summary>
+    /// 特殊效果，对应原服 skillCfg.SpecialEffect。大部分技能为 null。
+    /// </summary>
+    public SpecialEffectItem SpecialEffect;
+
+    /// <summary>
+    /// 技能进阶效果，对应原服 global.SkillUpperlevel。
+    /// 配置里同一 CanupperLevel 段内只有「该段第一级」有值（如 Lv5/Lv10/Lv15…），
+    /// 其余行是 null，用 GetUpperlevelSetting 段内取第一个非空的。
+    /// </summary>
+    public UpperlevelSettingItem UpperlevelSetting;
+
+    public class UpperlevelSettingItem
+    {
+        /// <summary>伤害百分比提升（万分比）。</summary>
+        public int DamagePer;
+        /// <summary>持续时间固定值增加（毫秒）。</summary>
+        public int DurationCon;
+        /// <summary>技能范围增加（格子）。</summary>
+        public int Distance;
+        /// <summary>减控百分比。</summary>
+        public int Control;
+        /// <summary>触发几率。</summary>
+        public int Trigger;
+    }
+
+    public class SpecialEffectItem
+    {
+        /// <summary>斩杀比例（万分比）。目标生命百分比低于该值时直接斩杀。</summary>
+        public int Slay;
+        /// <summary>伤害转移/吸血比例（万分比）。</summary>
+        public int DamTransfer;
+        /// <summary>多段攻击次数。</summary>
+        public int MulAttact;
+        public int BackDistence;
+        public int FlyDistence;
+    }
 }
 
 /// <summary>
@@ -192,6 +234,42 @@ public class CFG_Skill : CFGTableBase<CFGItem_Skill>
             }
             return _UpperAdvanceList;
         }
+    }
+
+    /// <summary>
+    /// 取指定进阶等级的效果，对齐原服 global.GetUpperlevelSettingCfg：
+    ///   id := uid / 100（= SkillID）
+    ///   在同 SkillID 的配置里找 CanupperLevel == advanced 且 UpperlevelSetting 非空的那条
+    /// 原服加载配置时做了「段内向上填充」（lastUpperlevelSetting），
+    /// 所以直接取段内第一条非空的即可。
+    /// </summary>
+    public static CFGItem_Skill.UpperlevelSettingItem GetUpperlevelSetting(int skillUuid, int advancedLevel)
+    {
+        CFGItem_Skill baseSkill;
+        try { baseSkill = GetById(skillUuid); }
+        catch { return null; }
+        if (baseSkill == null)
+            return null;
+
+        var list = Get().DicList;
+        if (list == null)
+            return null;
+        for (int i = 0; i < list.Count; i++)
+        {
+            CFGItem_Skill cfg = list[i];
+            if (cfg == null)
+                continue;
+            if (cfg.SkillID != baseSkill.SkillID)
+                continue;
+            int canUpper;
+            try { canUpper = (int)cfg.CanupperLevel; }
+            catch { continue; }
+            if (canUpper != advancedLevel)
+                continue;
+            if (cfg.UpperlevelSetting != null)
+                return cfg.UpperlevelSetting;
+        }
+        return null;
     }
 
     //根据当前技能ID 

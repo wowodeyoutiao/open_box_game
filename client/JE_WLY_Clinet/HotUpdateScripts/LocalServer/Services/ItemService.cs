@@ -286,6 +286,748 @@ namespace HotUpdateScripts.LocalNet
             };
         }
 
+        // ==================== 分解 / 回收 ====================
+
+        public object ItemDisassembly(byte[] req)
+        {
+            ItemDisassemblyRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<ItemDisassemblyRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new ItemDisassemblyResponse
+                {
+                    Code = -1,
+                    Error = "分解请求解析失败: " + e.Message,
+                };
+            }
+
+            var response = new ItemDisassemblyResponse
+            {
+                Code = 0,
+                Error = "",
+                ItemUids = request == null ? new long[0] : request.ItemUids,
+            };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                response.Code = -1;
+                response.Error = "没有角色";
+                return response;
+            }
+            if (request == null || request.ItemUids == null || request.ItemUids.Length == 0)
+                return response;
+
+            // 原服是两段式：先收集 getitem 列表，循环结束后才统一 takeSourceByUidBatch + addSourceBatch。
+            // 所以中途遇到「穿戴中的装备」时原服一件都不会少；单机版早期实现是在循环里直接删背包，
+            // 第 N 件报错 return 时前 N-1 件已被删、奖励却还没发 ⇒ 物品凭空蒸发。这里同样分两段。
+            var targets = new List<ItemInfo>();
+            var targetCfgs = new List<CFGItem_Item>();
+            for (int i = 0; i < request.ItemUids.Length; i++)
+            {
+                long uid = request.ItemUids[i];
+                if (IsEquipped(role, uid))
+                {
+                    response.Code = -3;
+                    response.Error = "装备穿戴中，不能回收";
+                    return response;
+                }
+
+                ItemInfo item = FindInBag(role.BagData, uid);
+                if (item == null)
+                    item = FindInBox(role, uid);
+                if (item == null)
+                    continue;                 // 原服：取不到该 uid 就 continue，不中断整批
+
+                CFGItem_Item cfg;
+                try { cfg = CFG_Item.GetById(item.CfgId); }
+                catch { cfg = null; }
+                if (cfg == null)
+                    continue;
+
+                targets.Add(item);
+                targetCfgs.Add(cfg);
+            }
+
+            var rewards = new Dictionary<int, long>();
+            for (int i = 0; i < targets.Count; i++)
+            {
+                ItemInfo item = targets[i];
+                // 同一个 uid 在请求里出现多次时按件数扣；已扣光的跳过，不能扣成负数。
+                if (item.Num <= 0)
+                    continue;
+                CollectDecompose(targetCfgs[i], rewards);
+
+                // 原服 takeSourceByUidBatch 对每个 uid 只扣 1 件。
+                // 早期实现直接整条 Remove ⇒ 分解一叠 5 个强化石只给 1 份奖励、另外 4 个凭空消失。
+                item.Num -= 1;
+                if (item.Num > 0)
+                    continue;
+                if (role.BagData != null && role.BagData.ItemList != null
+                    && role.BagData.ItemList.Remove(item))
+                    continue;
+                if (role.BoxOpenItems != null)
+                    role.BoxOpenItems.Remove(item);
+            }
+
+            ApplyRewards(role, rewards);
+            AfterItemChanged(role);
+            Log.Print("[ItemService] 分解完成 uid数=" + request.ItemUids.Length + " 实际分解=" + targets.Count);
+            return response;
+        }
+
+        public object ItemDestroy(byte[] req)
+        {
+            ItemDestroyRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<ItemDestroyRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new ItemDestroyResponse
+                {
+                    Code = -1,
+                    Error = "道具销毁请求解析失败: " + e.Message,
+                };
+            }
+
+            LocalRole role = LocalData.Instance.Current;
+            var response = new ItemDestroyResponse
+            {
+                Code = 0,
+                Error = "",
+                Item = new ItemInfo
+                {
+                    Uid = request == null ? 0 : request.ItemUid,
+                    Num = request == null ? 0 : request.Num,
+                },
+            };
+            if (role == null)
+            {
+                response.Code = -1;
+                response.Error = "没有角色";
+                return response;
+            }
+            if (request == null || request.ItemUid <= 0 || request.Num <= 0)
+            {
+                response.Code = -1;
+                response.Error = "参数错误";
+                return response;
+            }
+            if (IsEquipped(role, request.ItemUid))
+            {
+                response.Code = -3;
+                response.Error = "装备穿戴中，不能销毁";
+                return response;
+            }
+
+            ItemInfo item = FindInBag(role.BagData, request.ItemUid);
+            if (item == null || item.Num < request.Num)
+            {
+                response.Code = -2;
+                response.Error = "道具数量不足";
+                return response;
+            }
+
+            CFGItem_Item cfg;
+            try { cfg = CFG_Item.GetById(item.CfgId); }
+            catch { cfg = null; }
+            if (cfg == null)
+            {
+                response.Code = -2;
+                response.Error = "道具配置不存在";
+                return response;
+            }
+
+            // 原服 ItemDestroy 走的是「无品质系数」的简单累加（gi.Value += des.Value），
+            // 和 ItemDisassembly 那条带 Equipenhances 系数的路径不是同一份规则。
+            var rewards = new Dictionary<int, long>();
+            CollectDecomposePlain(cfg, rewards);
+            if (request.Num > 1)
+            {
+                var scaled = new Dictionary<int, long>();
+                foreach (KeyValuePair<int, long> kv in rewards)
+                    scaled[kv.Key] = kv.Value * request.Num;
+                rewards = scaled;
+            }
+
+            item.Num -= request.Num;
+            if (item.Num <= 0)
+                role.BagData.ItemList.Remove(item);
+            ApplyRewards(role, rewards);
+            AfterItemChanged(role);
+            return response;
+        }
+
+        public object AutoDisassembly(byte[] req)
+        {
+            AutoDisassemblyRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<AutoDisassemblyRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new AutoDisassemblyResponse
+                {
+                    Code = -1,
+                    Error = "自动分解设置解析失败: " + e.Message,
+                };
+            }
+
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+                return new AutoDisassemblyResponse { Code = -1, Error = "没有角色" };
+
+            int needVip = 0;
+            int needLevel = 0;
+            try
+            {
+                if (CFG_XMLConfig.xmlConfig != null && CFG_XMLConfig.xmlConfig.BaseValue != null)
+                {
+                    needVip = CFG_XMLConfig.xmlConfig.BaseValue.autoDelVipLv;
+                    needLevel = CFG_XMLConfig.xmlConfig.BaseValue.autoDelLv;
+                }
+            }
+            catch { }
+            if (role.Vip < needVip && role.Level < needLevel)
+                return new AutoDisassemblyResponse { Code = -1, Error = "自动分解尚未解锁" };
+
+            if (request == null || request.Info == null)
+                return new AutoDisassemblyResponse { Code = -1, Error = "参数错误" };
+            if (request.Info.Level <= 0
+                || request.Info.Quality <= ItemQuality.INVALID_Quality
+                || request.Info.Quality > ItemQuality.RED)
+                return new AutoDisassemblyResponse { Code = -1, Error = "参数错误" };
+
+            if (role.AutoDisassembly == null)
+                role.AutoDisassembly = new AutoDisassemblyInfo();
+            AutoDisassemblyInfo info = role.AutoDisassembly;
+            info.Open = request.Info.Open;
+            info.Level = request.Info.Level;
+            info.Quality = request.Info.Quality;
+            info.LevelSwitch = request.Info.LevelSwitch;
+            info.QualitySwitch = request.Info.QualitySwitch;
+            info.HighCombat = request.Info.HighCombat;
+
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushAutoDisassemblyNow();
+            return new AutoDisassemblyResponse
+            {
+                Code = 0,
+                Error = "",
+                Open = info.Open,
+                Level = info.Level,
+                Quality = info.Quality,
+                LevelSwitch = info.LevelSwitch,
+                QualitySwitch = info.QualitySwitch,
+                HighCombat = info.HighCombat,
+            };
+        }
+
+        private static bool IsEquipped(LocalRole role, long uid)
+        {
+            if (role == null || role.Equips == null)
+                return false;
+            foreach (KeyValuePair<EquipSlot, ItemInfo> kv in role.Equips)
+            {
+                if (kv.Value != null && kv.Value.Uid == uid)
+                    return true;
+            }
+            return false;
+        }
+
+        private static void CollectDecompose(CFGItem_Item cfg, Dictionary<int, long> rewards)
+        {
+            if (cfg == null || cfg.Decompose == null)
+                return;
+
+            int quality = cfg.Quality == null ? 0 : (int)cfg.Quality.Value;
+            float coefficient = 1f;
+            if (quality > 0 && quality <= 7)
+            {
+                try
+                {
+                    if (CFG_XMLConfig.xmlConfig != null
+                        && CFG_XMLConfig.xmlConfig.EquipEnhanceDic != null
+                        && CFG_XMLConfig.xmlConfig.EquipEnhanceDic.ContainsKey(quality))
+                        coefficient = CFG_XMLConfig.xmlConfig.EquipEnhanceDic[quality];
+                }
+                catch { }
+            }
+
+            for (int i = 0; i < cfg.Decompose.Length; i++)
+            {
+                Dictionary<string, int> entry = cfg.Decompose[i];
+                if (entry == null) continue;
+                foreach (KeyValuePair<string, int> kv in entry)
+                {
+                    int id;
+                    if (!int.TryParse(kv.Key, out id) || id <= 0 || kv.Value <= 0)
+                        continue;
+                    long num = kv.Value;
+                    if (rewards.ContainsKey(id))
+                        num = (long)(num * coefficient);
+                    if (rewards.ContainsKey(id))
+                        rewards[id] += num;
+                    else
+                        rewards[id] = num;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 无品质系数的分解表累加。对齐原服 ItemDestroy 与自动分解内部的 p.ItemDisassembly(itemInfo)：
+        /// 那两处都是 `gi.Value += des.Value` 的简单累加，不带 Equipenhances 系数。
+        /// </summary>
+        private static void CollectDecomposePlain(CFGItem_Item cfg, Dictionary<int, long> rewards)
+        {
+            if (cfg == null || cfg.Decompose == null || rewards == null)
+                return;
+            for (int i = 0; i < cfg.Decompose.Length; i++)
+            {
+                Dictionary<string, int> entry = cfg.Decompose[i];
+                if (entry == null) continue;
+                foreach (KeyValuePair<string, int> kv in entry)
+                {
+                    int id;
+                    if (!int.TryParse(kv.Key, out id) || id <= 0 || kv.Value <= 0)
+                        continue;
+                    if (rewards.ContainsKey(id))
+                        rewards[id] += kv.Value;
+                    else
+                        rewards[id] = kv.Value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 把 config.xml 的自动分解出厂开关灌进角色。
+        ///
+        /// 原服在角色初始化时用 global.GlobalCfg.AutoDecompose 填 ADLevelSwitch / ADQualitySwitch /
+        /// ADHighCombat / ADLevel / ADQuality（player.go 里的 InitAutoDisassembly 段），
+        /// 单机版之前完全没解析这一段，所以本地角色这几个字段恒为 false/0。
+        ///
+        /// 只填「从未设置过」的角色：接口 AutoDisassembly 对 Level / Quality 做了强校验
+        /// （Level > 0 且 INVALID_Quality < Quality <= RED），所以「Level == 0 或 Quality 非法」
+        /// 不可能是玩家保存下来的合法设置，可以安全地按出厂值补齐。
+        /// Open 一律保持原值 —— 出厂不自动开启，避免玩家在不知情的情况下把装备碎掉。
+        /// </summary>
+        public static void ApplyAutoDisassemblyDefaults(LocalRole role)
+        {
+            if (role == null)
+                return;
+            if (role.AutoDisassembly == null)
+                role.AutoDisassembly = new AutoDisassemblyInfo();
+            AutoDisassemblyInfo ad = role.AutoDisassembly;
+
+            if (ad.Level > 0 && ad.Quality > ItemQuality.INVALID_Quality)
+                return;
+
+            // ⚠️ 类型名是两层嵌套：CFG_XMLConfig → XML_Config → XML_Item_AutoDecompose。
+            //    裸写 XML_Config 在这里解析不到（它不是顶层类型），少一层就是 CS0426。
+            CFG_XMLConfig.XML_Config.XML_Item_AutoDecompose cfg = null;
+            try
+            {
+                if (CFG_XMLConfig.xmlConfig != null)
+                    cfg = CFG_XMLConfig.xmlConfig.AutoDecompose;
+            }
+            catch { cfg = null; }
+            if (cfg == null)
+                return;
+
+            if (cfg.Level > 0)
+                ad.Level = cfg.Level;
+            if (cfg.Quality > (int)ItemQuality.INVALID_Quality && cfg.Quality <= (int)ItemQuality.RED)
+                ad.Quality = (ItemQuality)cfg.Quality;
+            ad.LevelSwitch = cfg.LevelSwitch == 1;
+            ad.QualitySwitch = cfg.QualitySwitch == 1;
+            ad.HighCombat = cfg.KeepBetterSwitch == 1;
+        }
+
+        /// <summary>
+        /// 掉落自动分解（对齐原服 addSource 里的 ADOpen 分支）。
+        ///
+        /// 原服只在「掉落来源 reason == ItemAddDrop + 装备(Type 5) + 已开启」时判定：
+        ///   LevelSwitch   &amp;&amp; 装备等级限制 &lt;= ADLevel   → 分解
+        ///   QualitySwitch &amp;&amp; 装备品质     &lt;= ADQuality → 分解
+        ///   HighCombat    &amp;&amp; 新装备战力 &gt; 当前同部位战力 → 不分解（保底，后判覆盖前判）
+        /// 宝箱开箱 / 副本结算发的装备**不参与**（原服那两条路径 reason 不是 ItemAddDrop）。
+        ///
+        /// ⚠️ 现状：monster.json 全表掉落里没有任何 Type=5 装备（装备只从宝箱与副本 Settlement 出），
+        ///   所以这条链路是「接线完成、当前不会触发」。保留它是为了和原服语义对齐：
+        ///   以后一旦把装备配进掉落表就自动生效。单测直接调本方法验证判定逻辑。
+        ///
+        /// 返回 true = 已就地分解，调用方不要再把它塞进背包 / 掉落包。
+        /// </summary>
+        public bool TryAutoDecomposeDrop(LocalRole role, int cfgId, long num)
+        {
+            if (role == null || cfgId <= 0 || num <= 0)
+                return false;
+
+            AutoDisassemblyInfo ad = role.AutoDisassembly;
+            if (ad == null || !ad.Open)
+                return false;
+
+            CFGItem_Item cfg;
+            try { cfg = CFG_Item.GetById(cfgId); }
+            catch { cfg = null; }
+            if (cfg == null || EquipRuleService.ToInt(cfg.Type) != (int)ItemType.EQUIPMENT)
+                return false;
+
+            int level = EquipRuleService.ToInt(cfg.Levellimit);
+            int quality = cfg.Quality == null ? 0 : (int)cfg.Quality.Value;
+
+            bool decompose = false;
+            if (ad.LevelSwitch && level <= ad.Level)
+                decompose = true;
+            if (ad.QualitySwitch && quality > 0 && quality <= (int)ad.Quality)
+                decompose = true;
+            if (!decompose)
+                return false;
+
+            if (ad.HighCombat && IsBetterThanEquipped(role, cfg))
+                return false;
+
+            var rewards = new Dictionary<int, long>();
+            CollectDecomposePlain(cfg, rewards);
+            if (rewards.Count == 0)
+                return false;                  // 没配分解表：不拦，正常进包
+
+            if (num > 1)
+            {
+                var scaled = new Dictionary<int, long>();
+                foreach (KeyValuePair<int, long> kv in rewards)
+                    scaled[kv.Key] = kv.Value * num;
+                rewards = scaled;
+            }
+
+            ApplyRewards(role, rewards);
+            Log.Print("[ItemService] 自动分解 cfgId=" + cfgId + " num=" + num);
+            return true;
+        }
+
+        /// <summary>
+        /// 该装备的战力是否高于当前同部位已穿戴装备（原服 ADHighCombat 保底判定）。
+        /// 部位为空时视为「更高」——原服拿 nil 装备算战力得 0，任何装备都比它强，所以不分解。
+        /// </summary>
+        private static bool IsBetterThanEquipped(LocalRole role, CFGItem_Item cfg)
+        {
+            int slotValue = EquipRuleService.ToInt(cfg.Equiptype);
+            if (slotValue <= (int)EquipSlot.INVALID_EquipSlot || slotValue >= (int)EquipSlot.MaxEquipSlot)
+                return false;                  // 部位非法：没法比较，按「不比身上好」处理
+
+            ItemInfo current = null;
+            if (role.Equips != null)
+                role.Equips.TryGetValue((EquipSlot)slotValue, out current);
+            if (current == null)
+                return true;
+
+            int newPower;
+            int curPower;
+            try
+            {
+                var temp = new ItemInfo
+                {
+                    CfgId = cfg.ID,
+                    Num = 1,
+                    Type = ItemType.EQUIPMENT,
+                    Equip = new EquipInfo
+                    {
+                        Quality = ToQuality(EquipRuleService.ToInt(cfg.Quality)),
+                        Attributes = new List<Stats>(),
+                    },
+                };
+                newPower = GameUtil.Instance.GetEquipPower(temp, role.Job);
+            }
+            catch { newPower = 0; }
+            try { curPower = GameUtil.Instance.GetEquipPower(current, role.Job); }
+            catch { curPower = 0; }
+            return newPower > curPower;
+        }
+
+        private static void ApplyRewards(LocalRole role, Dictionary<int, long> rewards)
+        {
+            if (rewards == null || rewards.Count == 0)
+                return;
+            foreach (KeyValuePair<int, long> kv in rewards)
+            {
+                int id = kv.Key;
+                long num = kv.Value;
+                if (id <= 0 || num <= 0) continue;
+                if (id == 1)
+                {
+                    role.Coin += num;
+                    LocalData.Instance.Gold = role.Coin;
+                }
+                else if (id == 2)
+                {
+                    LevelUpService.Instance.AddExp(role, num);
+                    LocalData.Instance.Exp = role.Exp;
+                    LocalData.Instance.Level = role.Level;
+                }
+                else if (id == 14)
+                {
+                    role.TreasuerBox += num;
+                    LocalData.Instance.TreasuerBox = role.TreasuerBox;
+                }
+                else
+                {
+                    AddBagItem(role, id, num);
+                }
+            }
+        }
+
+        public bool GrantReward(LocalRole role, int cfgId, long num)
+        {
+            if (role == null || cfgId <= 0 || num <= 0)
+                return false;
+            if (cfgId == 1)
+            {
+                role.Coin += num;
+                LocalData.Instance.Gold = role.Coin;
+                return true;
+            }
+            if (cfgId == 2)
+            {
+                LevelUpService.Instance.AddExp(role, num);
+                LocalData.Instance.Exp = role.Exp;
+                LocalData.Instance.Level = role.Level;
+                return true;
+            }
+            if (cfgId == 14)
+            {
+                role.TreasuerBox += num;
+                LocalData.Instance.TreasuerBox = role.TreasuerBox;
+                return true;
+            }
+            switch (cfgId)
+            {
+                case 4:
+                    role.Soul += num;
+                    LocalData.Instance.Soul = role.Soul;
+                    return true;
+                case 5:
+                    role.Coupon += num;
+                    LocalData.Instance.Coupon = role.Coupon;
+                    return true;
+                case 8:
+                    role.TrialVoucher += num;
+                    LocalData.Instance.TrialVoucher = role.TrialVoucher;
+                    return true;
+                case 99:
+                    role.BoxQuick += num;
+                    LocalData.Instance.BoxQuick = role.BoxQuick;
+                    return true;
+            }
+            // 战宠道具（item.Type = 9，如 50001）**不落背包，直接变成宠物**：
+            // 对齐原服 addSource 的 `itemCfg.MainType == constant.ItemPet → addPet` 分支。
+            if (IsPetItem(cfgId))
+                return PetService.Instance.GrantPetByItem(role, cfgId, num);
+
+            // 伙伴整卡（item.Type = 8，如 40001）**不落背包，直接变成伙伴**：
+            // 对齐原服 addSource 的 `itemCfg.MainType == constant.ItemPartner → addPartner` 分支。
+            // 注意伙伴**碎片**（Type = 7）是正常进背包的，它靠「伙伴合成」消耗，别一起拦掉。
+            int partnerCfgId = GetPartnerCfgIdByItem(cfgId);
+            if (partnerCfgId > 0)
+            {
+                int partnerCount = num > 20 ? 20 : (int)num;
+                for (int i = 0; i < partnerCount; i++)
+                    PartnerService.Instance.AddPartner(role, partnerCfgId);
+                return true;
+            }
+
+            AddBagItem(role, cfgId, num);
+            return true;
+        }
+
+        /// <summary>
+        /// 伙伴整卡道具（item.json 的 Type = 8，原服 constant.ItemPartner）对应的伙伴配置 ID。
+        /// 返回 0 表示不是伙伴整卡（含伙伴碎片 Type = 7，那类要正常进背包）。
+        /// </summary>
+        public static int GetPartnerCfgIdByItem(int cfgId)
+        {
+            if (cfgId <= 0)
+                return 0;
+            try
+            {
+                CFGItem_Item itemCfg = CFG_Item.GetById(cfgId);
+                if (itemCfg == null || EquipRuleService.ToInt(itemCfg.Type) != 8)
+                    return 0;
+                // ⚠️ 必须用 GetByItemCfgID（比的是伙伴配置的 ItemID = 整卡道具 id）。
+                //    CFG_Partner.GetByItemID 看着像「按道具找伙伴」，实际比的是 ChipGoodID
+                //    （**碎片**道具 id），用错会永远返回 null。
+                CFGItem_Partner partnerCfg = CFG_Partner.GetByItemCfgID(cfgId);
+                return partnerCfg == null ? 0 : partnerCfg.ID;
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
+        /// 是否是「战宠道具」（item.json 的 Type = 9，原服 constant.ItemPet）。
+        /// 这类道具进背包时会直接变成宠物，见 GrantReward。
+        /// </summary>
+        public static bool IsPetItem(int cfgId)
+        {
+            if (cfgId <= 0)
+                return false;
+            try
+            {
+                CFGItem_Item cfg = CFG_Item.GetById(cfgId);
+                // Type 枚举：0 不进包 / 1..5 普通道具与装备 / 6 魂石 / 7 伙伴碎片 / 8 伙伴整卡 / 9 战宠
+                return cfg != null && EquipRuleService.ToInt(cfg.Type) == 9;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 指定道具的数量（伙伴升星等消耗校验用）。
+        /// id=1 金币 / id=14 宝箱不在背包里，单独取角色字段。
+        /// </summary>
+        public static long CountItem(LocalRole role, int cfgId)
+        {
+            if (role == null)
+                return 0;
+            // 货币类不落在背包里，走角色字段（对齐客户端 BagM.GetNumByCfgID）
+            switch (cfgId)
+            {
+                case 1: return role.Coin;          // Gold 金币
+                case 2: return role.Exp;           // EXP
+                case 4: return role.Soul;          // ZhanHun 战魂
+                case 5: return role.Coupon;        // DianQuan 点券/元宝
+                case 8: return role.TrialVoucher;  // SLPZ 试炼积分
+                case 14: return role.TreasuerBox;
+                case 99: return role.BoxQuick;     // JSJZ
+            }
+            if (role.BagData == null || role.BagData.ItemList == null)
+                return 0;
+            long total = 0;
+            for (int i = 0; i < role.BagData.ItemList.Count; i++)
+            {
+                ItemInfo item = role.BagData.ItemList[i];
+                if (item != null && item.CfgId == cfgId)
+                    total += item.Num;
+            }
+            return total;
+        }
+
+        /// <summary>扣除道具，数量不足返回 false 且不做任何修改。</summary>
+        public static bool ConsumeItem(LocalRole role, int cfgId, long num)
+        {
+            if (role == null || num <= 0)
+                return false;
+            if (CountItem(role, cfgId) < num)
+                return false;
+
+            switch (cfgId)
+            {
+                case 1:
+                    role.Coin -= num;
+                    LocalData.Instance.Gold = role.Coin;
+                    return true;
+                case 4:
+                    role.Soul -= num;
+                    LocalData.Instance.Soul = role.Soul;
+                    return true;
+                case 5:
+                    role.Coupon -= num;
+                    LocalData.Instance.Coupon = role.Coupon;
+                    return true;
+                case 8:
+                    role.TrialVoucher -= num;
+                    LocalData.Instance.TrialVoucher = role.TrialVoucher;
+                    return true;
+                case 14:
+                    role.TreasuerBox -= num;
+                    LocalData.Instance.TreasuerBox = role.TreasuerBox;
+                    return true;
+                case 99:
+                    role.BoxQuick -= num;
+                    LocalData.Instance.BoxQuick = role.BoxQuick;
+                    return true;
+            }
+
+            long left = num;
+            for (int i = role.BagData.ItemList.Count - 1; i >= 0 && left > 0; i--)
+            {
+                ItemInfo item = role.BagData.ItemList[i];
+                if (item == null || item.CfgId != cfgId)
+                    continue;
+                if (item.Num <= left)
+                {
+                    left -= item.Num;
+                    role.BagData.ItemList.RemoveAt(i);
+                }
+                else
+                {
+                    item.Num -= left;
+                    left = 0;
+                }
+            }
+            return true;
+        }
+
+        private static void AddBagItem(LocalRole role, int cfgId, long num)
+        {
+            if (role.BagData == null)
+                role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+            if (role.BagData.ItemList == null)
+                role.BagData.ItemList = new List<ItemInfo>();
+
+            for (int i = 0; i < role.BagData.ItemList.Count; i++)
+            {
+                ItemInfo old = role.BagData.ItemList[i];
+                if (old != null && old.CfgId == cfgId && !EquipRuleService.IsEquipment(old))
+                {
+                    old.Num += num;
+                    return;
+                }
+            }
+
+            CFGItem_Item cfg;
+            try { cfg = CFG_Item.GetById(cfgId); }
+            catch { return; }
+            if (cfg == null) return;
+            int type = EquipRuleService.ToInt(cfg.Type);
+            var item = new ItemInfo
+            {
+                CfgId = cfgId,
+                Uid = LocalData.Instance.AllocateItemUid(),
+                Num = num,
+                CreateTime = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                Type = (ItemType)type,
+            };
+            if (type == 5)
+            {
+                item.Equip = new EquipInfo
+                {
+                    Quality = ToQuality(EquipRuleService.ToInt(cfg.Quality)),
+                    Attributes = new List<Stats>(),
+                };
+            }
+            role.BagData.ItemList.Add(item);
+        }
+
+        private static ItemQuality ToQuality(int value)
+        {
+            if (value < (int)ItemQuality.WHITE) return ItemQuality.WHITE;
+            if (value > (int)ItemQuality.Rainbow) return ItemQuality.Rainbow;
+            return (ItemQuality)value;
+        }
+
+        private static void AfterItemChanged(LocalRole role)
+        {
+            if (role == null) return;
+            RoleStatService.Instance.Recalculate(role, true);
+            SaveCoordinator.Instance.SaveNow();
+            LocalPusher.Instance.PushUserBaseNow();
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushStatsNow();
+        }
+
         private static ItemInfo FindInBag(Bag bag, long uid)
         {
             if (bag == null || bag.ItemList == null)
@@ -308,16 +1050,6 @@ namespace HotUpdateScripts.LocalNet
                     return role.BoxOpenItems[i];
             }
             return null;
-        }
-        /// ⚠️ 直接构造对象：data 必须是空数组而非 null，否则 UI 遍历崩
-        /// </summary>
-        public HTTP_StoreListResponse GetStoreList()
-        {
-            return new HTTP_StoreListResponse
-            {
-                code = 0,
-                data = new HTTP_StoreList[0],
-            };
         }
     }
 }

@@ -28,10 +28,14 @@ namespace HotUpdateScripts.ProtoM
                 ReclicLevelStarDic.Add(data.relic_map.Evaluation[i].K, data.relic_map.Evaluation[i].V);
             }
 
+            // ⚠️ 这里原来错把 ChapterReward 写进了 ReclicLevelStarDic（关卡星级表），
+            //    导致 GetRelicChapterStarGet 读到的永远是 0、章节宝箱图标领完也不亮。
+            //    ChapterReward 的 K 是**章节号**（1..20），和关卡号（1701001）不在一个量纲上，
+            //    混进星级表还会让「章节 1」被当成「关卡 1」。
             ReclicChapterStarGetDic.Clear();
             for (int i = 0; i < data.relic_map.ChapterReward.Count; i++)
             {
-                ReclicLevelStarDic.Add(data.relic_map.ChapterReward[i].K, data.relic_map.ChapterReward[i].V);
+                ReclicChapterStarGetDic[data.relic_map.ChapterReward[i].K] = data.relic_map.ChapterReward[i].V;
             }
         }
 
@@ -59,9 +63,9 @@ namespace HotUpdateScripts.ProtoM
         //获取遗迹章节已经领取的章节
         public int GetRelicChapterStarGet(int chapter)
         {
-            if (!ReclicLevelStarDic.ContainsKey(chapter))
+            if (!ReclicChapterStarGetDic.ContainsKey(chapter))
                 return 0;
-            return ReclicLevelStarDic[chapter];
+            return ReclicChapterStarGetDic[chapter];
         }
 
         //战役点击红点

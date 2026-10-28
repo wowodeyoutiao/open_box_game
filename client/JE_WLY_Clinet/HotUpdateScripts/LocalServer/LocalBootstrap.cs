@@ -40,7 +40,9 @@ namespace HotUpdateScripts.LocalNet
 
             EnsureAutoSaveTimer();
             ShowLoadWarningIfNeeded();
+#if LOCAL_TEST
             LocalSelfCheck.Run();
+#endif
 
             Log.Print("[LocalNet] 装配完成 mode=" + LocalRuntime.Mode
                 + " save=" + SaveCoordinator.Instance.LoadStatus

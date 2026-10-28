@@ -38,18 +38,28 @@ public class CFGItem_Pet : CFGItemBase
 
     public int Mark;
 
-    ////宠物类别
-    //public AttributeItem.Item[] PetKind;
+    /// <summary>
+    /// 宠物类别。pet.json 里是单个对象 <c>{"key":1,"value":0}</c>（不是数组）。
+    ///
+    /// 原服只用两个语义：
+    ///   · <c>key == 2</c> → 经验宝宝：属性结算时品质系数强制取 1（getpetQualityRate 的 rate=1），
+    ///     并且不能作为上阵宠物提供属性（它只用来喂经验）；
+    ///   · <c>value</c> → 经验宝宝自带的经验值（宠物合成时用，55-B 的合成分支会读）。
+    /// </summary>
+    public PetKindItem PetKind;
 
-    ///// <summary>
-    ///// 宠物类别
-    ///// </summary>
-    //public int PetType {
-    //    get
-    //    {
-    //        return PetKind[0].key;
-    //    }
-    //}
+    /// <summary>宠物类别（key 类型 / value 数值）。</summary>
+    public class PetKindItem
+    {
+        public int key;
+        public int value;
+    }
+
+    /// <summary>是否经验宝宝（PetKind.key == 2）。</summary>
+    public bool IsExpPet
+    {
+        get { return PetKind != null && PetKind.key == 2; }
+    }
 
     public int ItemID;
 

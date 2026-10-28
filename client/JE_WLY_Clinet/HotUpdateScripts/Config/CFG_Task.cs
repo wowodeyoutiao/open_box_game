@@ -31,6 +31,10 @@ public class CFGItem_Task : CFGItemBase
     public decimal VIPLevel;
 
     public decimal ResetMark;
+    public int? Job;
+    public int[] Level;
+    public decimal TaskMark;
+    public decimal NextAchievement;
 
     public ActivityReward_Item ActivityReward;
 

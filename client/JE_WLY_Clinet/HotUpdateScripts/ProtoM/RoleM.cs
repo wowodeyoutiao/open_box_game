@@ -525,8 +525,18 @@ namespace HotUpdateScripts.ProtoM
         //检测是否可以购买
         public int GetCanNumBuyPVP(int _matchType)
         {
-            int storeId = (MatchType)_matchType == MatchType.SINGLE_COMBAT ? CFG_XMLConfig.xmlConfig.PVPInfo.storeId : CFG_XMLConfig.xmlConfig.GVGInfo.storeId;
-            return CFG_Store.GetById(storeId).Limite.limitnum - PVPDic[(MatchType)_matchType].DailyBuyNum;
+            MatchType matchType = (MatchType)_matchType;
+            PVPClass pvp;
+            if (PVPDic == null || !PVPDic.TryGetValue(matchType, out pvp) || pvp == null)
+                return 0;
+
+            int storeId = matchType == MatchType.SINGLE_COMBAT
+                ? CFG_XMLConfig.xmlConfig.PVPInfo.storeId
+                : CFG_XMLConfig.xmlConfig.GVGInfo.storeId;
+            CFGItem_Store store = CFG_Store.GetById(storeId);
+            if (store == null || store.Limite == null)
+                return 0;
+            return store.Limite.limitnum - pvp.DailyBuyNum;
         }
         
         public CFG_XMLConfig.XML_Config.XML_Item_PVP.PVPseason GetPVPOneSeason()

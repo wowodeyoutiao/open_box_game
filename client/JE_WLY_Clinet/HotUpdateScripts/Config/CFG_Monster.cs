@@ -41,6 +41,12 @@ public class CFGItem_Monster : CFGItemBase
 
     public int AttackDistance;
 
+    /// <summary>追击半径上限，离出生点超过该距离就脱战回位（原服 monsterCfg.Chase）。</summary>
+    public int Chase;
+
+    /// <summary>索敌/出生点散布范围（原服 monsterCfg.ViewRange）。</summary>
+    public int ViewRange;
+
     public string Model;
 
     public string AttackEffect;
@@ -54,20 +60,46 @@ public class CFGItem_Monster : CFGItemBase
 
     public int Delay;
 
+    /// <summary>怪物攻击技能 ID，服务端 MonsterConfig.Skills 同名。</summary>
+    public int[] Skills;
+
     public Dictionary<string, int>[] BassProperty;
 
     public int Quality;
 
     public decimal Barnum;
 
+    /// <summary>击杀经验。</summary>
+    public int Experience;
 
-    //public class DorpItem
-    //{
-    //    public int id;
-    //}
+    /// <summary>
+    /// 重生间隔（**毫秒**）。对齐原服 MonsterConfig.Relive，
+    /// monster_mgr 里是 time.AfterFunc(millisecond * reliveTime) 原地复活。
+    /// 只有 PVEPeacefulMap(守卫海岛) / StarUpStoneFBMap / SoulStoneFBMap 这类
+    /// 刷怪房间会用到；战役/首领/试炼塔是一次性刷怪，不读这个值。
+    ///
+    /// ⚠️ 配置里是浮点写法（30000.0），所以用 decimal 接收；
+    ///    ILRuntime 下 decimal 只能转 int/long，读的时候写 (int)cfg.Relive。
+    /// </summary>
+    public decimal Relive;
 
-    //public DorpItem[] Dorp;
+    /// <summary>掉落配置。</summary>
+    public DorpItem[] Dorp;
 
+    [System.Serializable]
+    public class DorpItem
+    {
+        public int[] id;
+        public DorpNum num;
+        public int ratio;
+    }
+
+    [System.Serializable]
+    public class DorpNum
+    {
+        public int min;
+        public int max;
+    }
 }
 
 /// <summary>

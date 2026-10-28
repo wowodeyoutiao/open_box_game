@@ -268,26 +268,94 @@ namespace HotUpdateScripts.LocalNet
             // 客户端 Sever_InstanceInfoResponse 一访问就 NRE（已实际踩到）。
             // ⚠️ Battle/Boss/TrialTower/Relic/AFK/ToEnd 是 InstanceInfoResponse 的
             //    **嵌套类型**（8 空格缩进的 partial class），必须写全限定名。
+            LocalRole role = LocalData.Instance.Current;
+            if (role != null)
+                BattleService.Instance.EnsureRelicChallenge(role);
             return new InstanceInfoResponse
             {
-                battle_map = new InstanceInfoResponse.Battle(),
-                boss_map = new InstanceInfoResponse.Boss(),
-                trial_tower_map = new InstanceInfoResponse.TrialTower(),
-                relic_map = new InstanceInfoResponse.Relic(),
-                afk = new InstanceInfoResponse.AFK(),
+                battle_map = new InstanceInfoResponse.Battle
+                {
+                    BattleId = role == null ? 0 : role.BattleId,
+                    RewardStage = role == null ? 0 : role.BattleRewardStage,
+                },
+                boss_map = new InstanceInfoResponse.Boss
+                {
+                    BattleId = role == null ? 0 : role.BossId,
+                    ChallengeTime = role == null ? 0 : role.BossChallengeTime,
+                },
+                trial_tower_map = new InstanceInfoResponse.TrialTower
+                {
+                    BattleId = role == null ? 0 : role.TrialTowerId,
+                },
+                // 遗迹：进度 / 剩余次数 / 各关星级 / 章节宝箱已领档位
+                // ⚠️ Evaluation 和 ChapterReward 必须下发，否则客户端 UIFightChoice 的
+                //    「第X章-第Y关」星星、章节进度条（slider_YJ = 星数/30）和宝箱图标全是灰的。
+                relic_map = role == null
+                    ? new InstanceInfoResponse.Relic()
+                    : new InstanceInfoResponse.Relic
+                    {
+                        BattleId = role.RelicId,
+                        ChallengeTime = role.RelicChallengeTime,
+                        Evaluation = ToKeyValueList(role.RelicEvaluation),
+                        ChapterReward = ToKeyValueList(role.RelicChapterReward),
+                    },
+                // 守卫海岛：剩余挂机秒数 + 当前倍率（客户端 UIFightChoice 用它显示「X倍效率」）
+                afk = new InstanceInfoResponse.AFK
+                {
+                    DailyTime = role == null ? 0 : BattleService.Instance.GetAfkLeftSec(role),
+                    ExpirationAt = 0,
+                    AfkMultiplierID = role == null ? 0 : role.AfkMultiplierID,
+                },
                 to_end = new InstanceInfoResponse.ToEnd(),
             };
         }
 
         public object GetDailyMapInfo()
         {
-            return new DailyMapInfoResponse { Code = 0, Error = "" };
+            var response = new DailyMapInfoResponse { Code = 0, Error = "" };
+
+            // 每日副本 rooms 7..12（经验/金币/强化石/书页/升星石/魂石）
+            LocalRole role = LocalData.Instance.Current;
+            if (role != null)
+            {
+                BattleService.Instance.EnsureDailyMapTimes(role);
+                for (int roomType = (int)CFG_Room.RoomType.EXP;
+                    roomType <= (int)CFG_Room.RoomType.HS; roomType++)
+                {
+                    response.Info.Add(new ChallengeInfo
+                    {
+                        MType = (MapType)roomType,
+                        Times = BattleService.Instance.GetDailyMapTimes(role, roomType),
+                    });
+                }
+            }
+            return response;
         }
 
         /// <summary>PVP 信息：多人内容，阶段3 会删，先给空响应保证界面不崩</summary>
         public object GetPvpInfo()
         {
             return new PVPInfoResponse { Code = 0, Error = "" };
+        }
+
+        /// <summary>
+        /// 把本地 List&lt;KeyValue&gt; 深拷成协议列表。
+        /// 不能直接把 role 里的列表塞给响应：ILRuntime 下协议对象会被复用/改字段，
+        /// 回写会污染存档数据。
+        /// </summary>
+        private static List<KeyValue> ToKeyValueList(List<KeyValue> source)
+        {
+            var list = new List<KeyValue>();
+            if (source == null)
+                return list;
+            for (int i = 0; i < source.Count; i++)
+            {
+                KeyValue kv = source[i];
+                if (kv == null)
+                    continue;
+                list.Add(new KeyValue { K = kv.K, V = kv.V });
+            }
+            return list;
         }
     }
 }

@@ -85,7 +85,14 @@ namespace HotUpdateScripts.LocalNet
             // 这些响应都是 struct + 数组字段，走 Factory 直接构造对象，
             // 保证数组是空数组而非 null（LitJson 解析热更 struct 会丢字段）
             RegisterFactory("/v1/mail/list", (body) => MailService.Instance.GetList());
-            RegisterFactory("/v1/store/list", (body) => ItemService.Instance.GetStoreList());
+            RegisterFactory("/v1/mail/detail", (body) => MailService.Instance.GetDetail(body));
+            RegisterFactory("/v1/mail/extract", (body) => MailService.Instance.Extract(body));
+            RegisterFactory("/v1/mail/extractall", (body) => MailService.Instance.ExtractAll());
+            RegisterFactory("/v1/mail/del", (body) => MailService.Instance.Delete(body));
+            RegisterFactory("/v1/mail/delall", (body) => MailService.Instance.DeleteAll());
+            // 商城：列表返回各商品已购数量，购买走同一套限购/货币/发货逻辑
+            RegisterFactory("/v1/store/list", StoreService.Instance.GetList);
+            RegisterFactory("/v1/store/buy", StoreService.Instance.Buy);
             RegisterFactory("/v1/sign/list", (body) => ActivityService.Instance.GetSignList());
             RegisterFactory("/v1/activity/listall", (body) => ActivityService.Instance.GetActivityAll());
             RegisterFactory("/v1/activity/listcontinuity", (body) => ActivityService.Instance.GetActivityList());

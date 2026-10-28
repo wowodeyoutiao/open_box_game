@@ -42,6 +42,13 @@ public class CFG_XMLConfig
         public Dictionary<int, float> EquipEnhanceDic;
 
         /// <summary>
+        /// 自动分解的出厂开关（config.xml /Config/autodecompose/key）。
+        /// 原服是在角色初始化时用 global.GlobalCfg.AutoDecompose 灌进 ADLevelSwitch 等字段，
+        /// 单机版之前完全没解析，导致本地角色这一组开关恒为 false。
+        /// </summary>
+        public XML_Item_AutoDecompose AutoDecompose;
+
+        /// <summary>
         /// 副本内死亡复活的每次道具消耗
         /// </summary>
         public Dictionary<int, XML_Item_Revive> ReviveDic;
@@ -118,6 +125,12 @@ public class CFG_XMLConfig
         /// </summary>
         public Dictionary<CFG_Room.RoomType, XML_DailyMap> DayRoomDic = new Dictionary<CFG_Room.RoomType, XML_DailyMap>();
 
+        /// <summary>
+        /// 各副本每日免费挑战次数（config.xml 的 &lt;Copyset&gt;：key = 副本类型 / num = 次数）。
+        /// 当前配置：15（首领）= 5 次，17（遗迹）= 10 次。
+        /// </summary>
+        public Dictionary<int, int> CopySetDic;
+
 
         /// <summary>
         /// 用来配置伙伴和宠物上阵时的品质筛选条件
@@ -167,6 +180,15 @@ public class CFG_XMLConfig
             /// 主界面在线挂机配置
             /// </summary>
             public XML_Item_OnlineBattle onlineBattle;
+
+            /// <summary>挂机副本（守卫海岛）每日可挂机时长。</summary>
+            public XML_Item_ExpCopy expcopy;
+
+            /// <summary>角色等级上限。</summary>
+            public XML_Item_RoleLevel rolelevel;
+
+            /// <summary>经验池最大累积倍率。</summary>
+            public XML_Item_ExpStore expstore;
 
             /// <summary>
             /// 改名
@@ -227,6 +249,21 @@ public class CFG_XMLConfig
             public int time;
             public int needMoneyID;
             public int num;
+        }
+
+        /// <summary>
+        /// 自动分解出厂设置，对应 config.xml：
+        ///   &lt;autodecompose&gt;&lt;key quality level qualityswitch levelswitch keepbetterswitch /&gt;&lt;/autodecompose&gt;
+        /// 注意 config.xml 里有**两个同名节点**：BaseValue 下的 &lt;autodecompose viplevel rolelevel /&gt;（解锁条件）
+        /// 和根节点下的 &lt;autodecompose&gt;&lt;key .../&gt;（出厂开关）。这里只读后者，走 /Config/autodecompose/key。
+        /// </summary>
+        public class XML_Item_AutoDecompose
+        {
+            public int Quality;
+            public int Level;
+            public int QualitySwitch;
+            public int LevelSwitch;
+            public int KeepBetterSwitch;
         }
 
 
@@ -337,6 +374,27 @@ public class CFG_XMLConfig
             public int triggerTime;
             /// <summary>点击间隔（秒）</summary>
             public int limitTime;
+        }
+
+        /// <summary>
+        /// 挂机副本（守卫海岛）配置：config.xml 的 &lt;BaseValue&gt;&lt;expcopy dailytime="3600" /&gt;。
+        /// 原服 Player.afkLeftTime() = expcopy.dailytime - afkDailyTime。
+        /// </summary>
+        public class XML_Item_ExpCopy
+        {
+            /// <summary>每天可挂机总时长（秒）</summary>
+            public int dailytime;
+            /// <summary>持续天数</summary>
+            public int lastday;
+        }
+
+        public class XML_Item_RoleLevel
+        {
+            public int maxlevel;        }
+
+        public class XML_Item_ExpStore
+        {
+            public int rate;
         }
 
         public class XML_Item_Energy
@@ -654,6 +712,22 @@ public class CFG_XMLConfig
             /// </summary>
             public ScoreItem[] ScoreDic;
 
+            /// <summary>
+            /// 基础结算道具 ID（config.xml 的 basevalue id）。
+            /// 经验副本=2 / 金币=1 / 强化石=21 / 书页=23。
+            /// </summary>
+            public int baseValueID;
+
+            /// <summary>基础结算数量（config.xml 的 basevalue num）。</summary>
+            public int baseValueNum;
+
+            /// <summary>
+            /// 怪物属性成长参数（config.xml 的 accommodation num）：
+            /// 攻/防/血 = 配置值 × [INT(玩家等级 / accommodation) + 1]。
+            /// 升星石/魂石副本没有这一项（= 0，不成长）。
+            /// </summary>
+            public int accommodationNum;
+
             public class ScoreItem 
             {
                 public string key;
@@ -678,13 +752,39 @@ public class CFG_XMLConfig
         public Dictionary<int, XML_Item_Initial> InitialDic;
 
         //用来配置主角等级解锁的宠物包裹数量
+        //   key = 包裹格数（10..20），value = 需要的主角等级
+        //   （xml 里写的是 <key Level="1" value="10"/>，解析时换算成「格数 → 等级」）
         public Dictionary<int, int> PetBagDic;
+
+        /// <summary>宠物包裹总格数（config.xml &lt;petbag totlenum="20"/&gt;）。</summary>
+        public int PetBagTotal;
 
         //配置战宠进阶功能的道具使用
         public GoodItem[] PetAdvanceUseds;
 
+        /// <summary>
+        /// 宠物进阶暴击倍率档位（config.xml PetAdvance/rate/stage）：
+        /// 配置为 rate=1 Pro=7000 / rate=2 Pro=2000 / rate=3 Pro=1000，
+        /// 即 70% 不暴击、20% 两倍、10% 三倍。按 Pro 万分比累加分段随机。
+        /// </summary>
+        public PetStageRate[] PetAdvanceStages;
+
+        /// <summary>宠物进阶暴击档位（rate = 倍率 / pro = 万分比权重）。</summary>
+        public class PetStageRate
+        {
+            public int rate;
+            public int pro;
+        }
+
         //配置战宠进阶功能的道具使用
         public Dictionary<int, float> PetQualityDic;
+
+        /// <summary>
+        /// 不同品质宠物「升级所需经验」的品质系数（config.xml Petlevel）：
+        /// 品质 1/2 = 1、3 = 1.55、4 = 1.95、6 = 2.5、7 = 3.5、8 = 6。
+        /// 原服 GetpetLevelRate，petLevel 里 NeedExp = RoleCfg.NeedExp × 该系数 - 当前经验。
+        /// </summary>
+        public Dictionary<int, float> PetLevelDic;
 
         //配置伙伴进阶功能的道具使用
         public Dictionary<int, float> PartnerQualityDic;
@@ -908,6 +1008,19 @@ public class CFG_XMLConfig
                 triggerTime = GetIntXML(baseValueElement, "onlinebattle", "triggertime"),
                 limitTime = GetIntXML(baseValueElement, "onlinebattle", "limittime"),
             },
+            expcopy = new XML_Config.XML_Item_ExpCopy
+            {
+                dailytime = GetIntXML(baseValueElement, "expcopy", "dailytime"),
+                lastday = GetIntXML(baseValueElement, "expcopy", "lastday"),
+            },
+            rolelevel = new XML_Config.XML_Item_RoleLevel
+            {
+                maxlevel = GetIntXML(baseValueElement, "rolelevel", "maxlevel"),
+            },
+            expstore = new XML_Config.XML_Item_ExpStore
+            {
+                rate = GetIntXML(baseValueElement, "expstore", "rate"),
+            },
 
             ReName = new XML_Config.XML_Item_Rifine
             {
@@ -1068,6 +1181,21 @@ public class CFG_XMLConfig
                 int.Parse(_element.GetAttribute("ID")),
                 float.Parse(_element.GetAttribute("value"))
                 );
+        }
+
+        //自动分解的出厂开关
+        //⚠️ 必须用 /Config/autodecompose/key 这条绝对路径：BaseValue 下还有一个同名
+        //   <autodecompose viplevel rolelevel />，SelectSingleNode("autodecompose") 会先命中它。
+        _xmlConfig.AutoDecompose = new XML_Config.XML_Item_AutoDecompose();
+        XmlNode autoDecNode = xmlDoc.SelectSingleNode("/Config/autodecompose/key");
+        if (autoDecNode != null)
+        {
+            XmlElement autoDec = (XmlElement)autoDecNode;
+            _xmlConfig.AutoDecompose.Quality = GetIntAttr(autoDec, "quality");
+            _xmlConfig.AutoDecompose.Level = GetIntAttr(autoDec, "level");
+            _xmlConfig.AutoDecompose.QualitySwitch = GetIntAttr(autoDec, "qualityswitch");
+            _xmlConfig.AutoDecompose.LevelSwitch = GetIntAttr(autoDec, "levelswitch");
+            _xmlConfig.AutoDecompose.KeepBetterSwitch = GetIntAttr(autoDec, "keepbetterswitch");
         }
 
         //用来配置星级直升宝石所对应的星
@@ -1347,9 +1475,27 @@ public class CFG_XMLConfig
                 describe = _element.GetAttribute("describe"),
             });
         }
+        // 各副本每日免费挑战次数（Copyset：key = 副本类型，num = 每天免费次数）
+        KeyNodes = xmlDoc.SelectNodes("/Config/Copyset/key");
+        _xmlConfig.CopySetDic = new Dictionary<int, int>();
+        for (int i = 0; i < KeyNodes.Count; i++)
+        {
+            XmlElement _element = (XmlElement)KeyNodes[i];
+            _xmlConfig.CopySetDic[int.Parse(_element.GetAttribute("id"))] =
+                int.Parse(_element.GetAttribute("num"));
+        }
         #endregion
 
         #region 宠物
+        //宠物包裹总格数（<petbag totlenum="20"/>）。原服 p.pet 定长 PetsSlot_MaxPetsSlot=21，
+        //其中 0 号是上阵位，1..20 是包裹格；totlenum 就是包裹格数。
+        {
+            XmlNode petBagNode = xmlDoc.SelectSingleNode("/Config/BaseValue/petbag");
+            XmlElement petBagElement = petBagNode as XmlElement;
+            if (petBagElement != null)
+                _xmlConfig.PetBagTotal = int.Parse(petBagElement.GetAttribute("totlenum"));
+        }
+
         //解锁的宠物包裹
         KeyNodes = xmlDoc.SelectNodes("/Config/Petbag/key");
         _xmlConfig.PetBagDic = new Dictionary<int, int>();
@@ -1388,6 +1534,28 @@ public class CFG_XMLConfig
         {
             XmlElement _element = (XmlElement)KeyNodes[i];
             _xmlConfig.PartnerQualityDic.Add(int.Parse(_element.GetAttribute("ID")), float.Parse(_element.GetAttribute("value")));
+        }
+
+        //宠物进阶暴击倍率档位（rate = 倍率，Pro = 万分比权重）
+        KeyNodes = xmlDoc.SelectNodes("/Config/PetAdvance/rate/stage");
+        _xmlConfig.PetAdvanceStages = new XML_Config.PetStageRate[KeyNodes.Count];
+        for (int i = 0; i < KeyNodes.Count; i++)
+        {
+            XmlElement _element = (XmlElement)KeyNodes[i];
+            _xmlConfig.PetAdvanceStages[i] = new XML_Config.PetStageRate
+            {
+                rate = int.Parse(_element.GetAttribute("rate")),
+                pro = int.Parse(_element.GetAttribute("Pro")),
+            };
+        }
+
+        //不同品质宠物升级所需经验的品质系数
+        KeyNodes = xmlDoc.SelectNodes("/Config/Petlevel/key");
+        _xmlConfig.PetLevelDic = new Dictionary<int, float>();
+        for (int i = 0; i < KeyNodes.Count; i++)
+        {
+            XmlElement _element = (XmlElement)KeyNodes[i];
+            _xmlConfig.PetLevelDic.Add(int.Parse(_element.GetAttribute("ID")), float.Parse(_element.GetAttribute("value")));
         }
 
 
@@ -1434,6 +1602,9 @@ public class CFG_XMLConfig
             viplimit = GetIntXML(baseValueElement, "goldmap/challengetime", "viplimit"),
             doubleaccessID = GetIntXML(baseValueElement, "goldmap/doubleaccess", "id"),
             doubleaccessNum = GetIntXML(baseValueElement, "goldmap/doubleaccess", "num"),
+            baseValueID = GetIntXML(baseValueElement, "goldmap/basevalue", "id"),
+            baseValueNum = GetIntXML(baseValueElement, "goldmap/basevalue", "num"),
+            accommodationNum = GetIntXML(baseValueElement, "goldmap/accommodation", "num"),
         });
 
         KeyNodes = xmlDoc.SelectNodes("/Config/dailymap/goldmap/score/stage");
@@ -1455,6 +1626,9 @@ public class CFG_XMLConfig
             viplimit = GetIntXML(baseValueElement, "expmap/challengetime", "viplimit"),
             doubleaccessID = GetIntXML(baseValueElement, "expmap/doubleaccess", "id"),
             doubleaccessNum = GetIntXML(baseValueElement, "expmap/doubleaccess", "num"),
+            baseValueID = GetIntXML(baseValueElement, "expmap/basevalue", "id"),
+            baseValueNum = GetIntXML(baseValueElement, "expmap/basevalue", "num"),
+            accommodationNum = GetIntXML(baseValueElement, "expmap/accommodation", "num"),
         });
 
         KeyNodes = xmlDoc.SelectNodes("/Config/dailymap/expmap/score/stage");
@@ -1476,6 +1650,9 @@ public class CFG_XMLConfig
             viplimit = GetIntXML(baseValueElement, "strengthenstonemap/challengetime", "viplimit"),
             doubleaccessID = GetIntXML(baseValueElement, "strengthenstonemap/doubleaccess", "id"),
             doubleaccessNum = GetIntXML(baseValueElement, "strengthenstonemap/doubleaccess", "num"),
+            baseValueID = GetIntXML(baseValueElement, "strengthenstonemap/basevalue", "id"),
+            baseValueNum = GetIntXML(baseValueElement, "strengthenstonemap/basevalue", "num"),
+            accommodationNum = GetIntXML(baseValueElement, "strengthenstonemap/accommodation", "num"),
             quickaccessScore = GetIntXML(baseValueElement, "strengthenstonemap/quickaccess", "score"),
             totlecycleNum = GetIntXML(baseValueElement, "strengthenstonemap/totlecycle", "num"),
         });
@@ -1487,6 +1664,9 @@ public class CFG_XMLConfig
             viplimit = GetIntXML(baseValueElement, "skillpagemap/challengetime", "viplimit"),
             doubleaccessID = GetIntXML(baseValueElement, "skillpagemap/doubleaccess", "id"),
             doubleaccessNum = GetIntXML(baseValueElement, "skillpagemap/doubleaccess", "num"),
+            baseValueID = GetIntXML(baseValueElement, "skillpagemap/basevalue", "id"),
+            baseValueNum = GetIntXML(baseValueElement, "skillpagemap/basevalue", "num"),
+            accommodationNum = GetIntXML(baseValueElement, "skillpagemap/accommodation", "num"),
             quickaccessScore = GetIntXML(baseValueElement, "skillpagemap/quickaccess", "score"),
             totlecycleNum = GetIntXML(baseValueElement, "skillpagemap/totlecycle", "num"),
         });
@@ -1698,6 +1878,18 @@ public class CFG_XMLConfig
     private static int GetIntXML(XmlElement root, string keyFirst, string keySecound)
     {
         return int.Parse(root.SelectSingleNode($"{keyFirst}[@{keySecound}]").Attributes[$"{keySecound}"].Value);
+    }
+
+    /// <summary>
+    /// 取元素上的 int 属性，属性缺失/非法一律返回 0。
+    /// GetIntXML 是「属性必须存在」的写法（缺了直接 NRE），新接入的配置项用这个安全版本。
+    /// </summary>
+    private static int GetIntAttr(XmlElement element, string name)
+    {
+        if (element == null || !element.HasAttribute(name))
+            return 0;
+        int value;
+        return int.TryParse(element.GetAttribute(name), out value) ? value : 0;
     }
 
     private static string GetStrXML(XmlElement root, string keyFirst, string keySecound)

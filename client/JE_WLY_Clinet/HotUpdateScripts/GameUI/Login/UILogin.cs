@@ -85,7 +85,10 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
         GetView().Btn_Login_Accout.onClick.AddListener(() =>
         {
             AudioManager.Instance.PlaySound(AudioKey.Sound.Button);
-            SDKCtr.Instance.OnUpCheak(OnHttp_Accout_Login);
+            if (HotUpdateScripts.LocalNet.LocalRuntime.IsLocalMode)
+                OnLocalStart();
+            else
+                SDKCtr.Instance.OnUpCheak(OnHttp_Accout_Login);
         });
         GetView().Btn_Login_Phone.onClick.AddListener(PhoneLogin);
 
@@ -147,6 +150,7 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
         //GetView().toggle_Arg.isOn = PlayerPrefsExtend.GetInt("Agree") == 0;
         GetView().intput_account.text = PlayerPrefsExtend.GetString("TextAcount");
         OnLoadShow();
+        ApplyLocalLoginLayout();
         if (!ExcelDataManager.Instance.IsLoad)
             OnLoadingShow();
     }
@@ -168,6 +172,7 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
     {
         GetView().slider_Load.gameObject.SetActive(!ExcelDataManager.Instance.IsLoad);
         GetView().intput_account.gameObject.SetActive(InitJEngine.Instance.IsFreeLogin);
+        ApplyLocalLoginLayout();
 
         if (SDKCtr.Instance.CurrentPlatform == SDKCtr.PlatformType.WebGL_WX && ExcelDataManager.Instance.IsLoad)
         {
@@ -213,6 +218,10 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
             UITool.Close<UILoading>();
             GetView().obj_Root.SetActive(true);
             OnSeverInfoShow(true);
+            ApplyLocalLoginLayout();
+#if LOCAL_TEST
+            HotUpdateScripts.LocalNet.Testing.LocalTestBootstrap.TryRunStandalone();
+#endif
             Debug.Log("GetSeverInfo: 本地单机模式 → " + GameM.LocalSeverUrl);
             return;
         }
@@ -262,6 +271,77 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
         Debug.Log("SelectSever.ipaddr --- " + SelectSever.ipaddr);
         
         ResouseHelper.Instance.LoadSpriteByAtlas("Common/Atlas/CreatRole", "img_" + SelectSever.status, GetView().img_Sever);
+    }
+
+    /// <summary>
+    /// 本地单机模式只保留背景和一个“开启游戏”按钮。
+    /// 账号、区服、手机号、微信、协议等入口全部隐藏；远端模式保持原布局。
+    /// </summary>
+    private void ApplyLocalLoginLayout()
+    {
+        if (!HotUpdateScripts.LocalNet.LocalRuntime.IsLocalMode)
+            return;
+
+        UIViewLogin view = GetView();
+        if (view == null)
+            return;
+
+        Hide(view.Btn_GongGao);
+        Hide(view.btn_ChatCustomer);
+        Hide(view.intput_account);
+        Hide(view.Btn_Login_Phone);
+        Hide(view.btn_WXLogin);
+        Hide(view.btn_SeverChoice);
+        Hide(view.Btn_GetSever);
+        Hide(view.toggle_Arg);
+        Hide(view.btn_Argee);
+        Hide(view.btn_YinSi);
+        Hide(view.txt_severName);
+        Hide(view.txt_SeverDes);
+        Hide(view.txt_NewSever);
+        Hide(view.img_Sever);
+        Hide(view.img_SeverNew);
+        Hide(view.txt_Version);
+        Hide(view.txt_test);
+
+        if (view.Btn_Login_Accout != null)
+        {
+            view.Btn_Login_Accout.gameObject.SetActive(true);
+            Text label = view.Btn_Login_Accout.GetComponentInChildren<Text>(true);
+            if (label != null)
+                label.text = "开启游戏";
+        }
+
+        // 加载期间保留进度条，加载完成后只留下开始按钮。
+        if (ExcelDataManager.Instance.IsLoad)
+        {
+            Hide(view.slider_Load);
+            Hide(view.txt_Load);
+        }
+    }
+
+    private static void Hide(UnityEngine.Component component)
+    {
+        if (component != null)
+            component.gameObject.SetActive(false);
+    }
+
+    private static void Hide(UnityEngine.GameObject go)
+    {
+        if (go != null)
+            go.SetActive(false);
+    }
+
+    private void OnLocalStart()
+    {
+        string account = PlayerPrefsExtend.GetString("TextAcount");
+        if (string.IsNullOrEmpty(account))
+        {
+            account = "editor_local";
+            PlayerPrefsExtend.SetString("TextAcount", account);
+        }
+        GetView().intput_account.text = account;
+        OnHttp_Accout_Login();
     }
 
     private void OnHttp_Accout_Login()

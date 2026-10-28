@@ -21,6 +21,15 @@ public class CFGItem_Partner : CFGItemBase
     /// </summary>
     public int Quality;
 
+    /// <summary>初始星级（partner.json 的 Star 列）。</summary>
+    public int Star;
+
+    /// <summary>索敌范围（原服 partnerCfg.AttackRange）。</summary>
+    public int AttackRange;
+
+    /// <summary>攻击距离（原服 partnerCfg.AttackDistance，索敌和攻击都用它）。</summary>
+    public int AttackDistance;
+
     /// <summary>
     /// 职业区分
     /// </summary>

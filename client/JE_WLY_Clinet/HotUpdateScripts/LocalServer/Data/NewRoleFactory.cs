@@ -104,11 +104,36 @@ namespace HotUpdateScripts.LocalNet
                 role.Equips[slot] = item;
             }
 
+            // 新手伙伴：按玩家职业送对应的低品质伙伴（11/12/13 = 1/2/3 + 10）。
+            // 正式入口应该是召唤（module 13），召唤系统未做前先用这里保证伙伴链路可玩。
+            PartnerService.Instance.EnsureSlots(role);
+            int starterPartner = GetStarterPartnerCfgId(job);
+            if (starterPartner > 0)
+                PartnerService.Instance.AddPartner(role, starterPartner);
+
+            // 自动分解出厂开关（config.xml /Config/autodecompose/key）
+            ItemService.ApplyAutoDisassemblyDefaults(role);
+
             Log.Print("[NewRoleFactory] 创建角色 uid=" + roleUid
                 + " name=" + name
                 + " job=" + StarterLoadoutConfig.GetJobName(job)
-                + " equips=" + role.Equips.Count);
+                + " equips=" + role.Equips.Count
+                + " partners=" + role.Partners.Count);
             return role;
+        }
+
+        /// <summary>
+        /// 新手伙伴配置 ID。伙伴 job 是玩家 job + 10，选品质 6 那组：
+        /// 10(11 战士) / 13(12 法师) / 16(13 祭祀)。
+        ///
+        /// 品质 2/3/4 的伙伴在 partner.json 里 Skills 为 null（纯属性，不放技能），
+        /// 品质 6 起才有技能，所以新手直接给品质 6，保证伙伴技能链路可见。
+        /// </summary>
+        private static int GetStarterPartnerCfgId(int job)
+        {
+            if (job == 2) return 13;
+            if (job == 3) return 16;
+            return 10;
         }
 
         private static ItemInfo CreateStarterItem(int cfgId, long uid, out string error)

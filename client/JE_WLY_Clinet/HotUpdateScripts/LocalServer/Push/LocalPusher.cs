@@ -26,16 +26,38 @@ namespace HotUpdateScripts.LocalNet
             LocalData d = LocalData.Instance;
             d.EnsureInit();
 
+            // 登录时先把离线挂机收益结算掉，再推送最新基础和背包。
+            var idle = IdleRewardService.Instance.SettleCurrent();
+            if (idle != null && idle.BagFull)
+                JEngine.Core.Log.PrintWarning("[IdleRewardService] 登录结算暂停: " + idle.Error);
+
             // 登录推送前统一重算，确保 Base / Stats / 大厅 UI 使用同一套属性。
             // 当前没有战斗消耗，登录时补满血量，避免显示旧存档里的默认 100。
+            LocalRole current = d.Current;
+            if (current != null)
+            {
+                SkillService.Instance.AutoLearn(current, false);
+                PushAllSkillsNow(current);
+                TaskService.Instance.EnsureInitialized(current);
+                TaskService.Instance.ResetIfNeeded(current);
+                PushAllTasksNow(current);
+                // 上阵宠物的挂机产出在登录时结算一次（原服上线时按上次记录时间补发）
+                PetService.Instance.SettleOfflineAward(current);
+            }
             RoleStatService.Instance.RecalculateCurrent(true);
 
             PushUserBase();
             PushUserStats();
             PushBoxInfo();
             PushUserEquips();
+            PushBagInfoNow();
+            PushAutoDisassemblyNow();
             PushPartnerSlot();
+            PushUserPet();
             PushSkillSlot();
+
+            if (idle != null && idle.LevelsGained > 0)
+                PushLevelUpNow(idle.NewLevel);
 
             // 大厅遇怪不再在这里推：改为 UIHall.StartLocalHomeEncounter() 本地自驱。
             // 原因：走 JEvent → ProtoC.Sever_HomeAutoEncounterPush → Sync_HomeAutoEncounter
@@ -43,6 +65,10 @@ namespace HotUpdateScripts.LocalNet
             // 大厅挂机表现本来就是 UI 层职责，单机下由 UI 自己 tick 更直接可靠。
 
             JEngine.Core.Log.Print("[LocalPusher] 登录推送完成");
+
+#if LOCAL_TEST
+            HotUpdateScripts.LocalNet.Testing.LocalTestBootstrap.TryRun();
+#endif
         }
 
         /// <summary>装备/等级等影响属性后，立即推送最新属性刷新 UI。</summary>
@@ -68,6 +94,51 @@ namespace HotUpdateScripts.LocalNet
         public void PushUserBaseNow()
         {
             PushUserBase();
+        }
+
+        /// <summary>挂机奖励或背包变化后整包刷新客户端背包镜像。</summary>
+        public void PushBagInfoNow()
+        {
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null || role.BagData == null || role.BagData.ItemList == null)
+                return;
+            HotUpdateScripts.ProtoM.BagM.Instance.SetBagInfo(role.BagData.ItemList);
+        }
+
+        /// <summary>同步自动分解设置，避免 BagM.AutoDelSetInfo 为 null。</summary>
+        public void PushAutoDisassemblyNow()
+        {
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+                return;
+            if (role.AutoDisassembly == null)
+                role.AutoDisassembly = new AutoDisassemblyInfo();
+            // 出厂开关兜底：读档时机可能早于 config.xml 就绪，这里再补一次（只填全 0 的空壳）
+            ItemService.ApplyAutoDisassemblyDefaults(role);
+            HotUpdateScripts.ProtoM.BagM.Instance.AutoDelSetInfo = role.AutoDisassembly;
+            JEvent.defaultEvent.Post(new GameEvent.AutoDelSet());
+        }
+
+        /// <summary>角色升级推送，对齐原服 LevelUpPush。</summary>
+        public void PushLevelUpNow(int newLevel)
+        {
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+                return;
+            PushLevelUpNow(newLevel, role.Uid);
+        }
+
+        /// <summary>
+        /// 升级表现推送。Uid 是升级的对象：主角是 role.Uid，伙伴是 partner.Uid。
+        /// 原服 Player.levelUp / Partner.levelUp 都发 RouteLevelUpPush。
+        /// </summary>
+        public void PushLevelUpNow(int newLevel, long uid)
+        {
+            JEvent.defaultEvent.Post(new LevelUpPush
+            {
+                NewLevel = newLevel,
+                Uid = uid,
+            });
         }
 
         /// <summary>
@@ -129,7 +200,7 @@ namespace HotUpdateScripts.LocalNet
                 VipExp = 0,
                 FateLevel = 0,
                 FateExp = 0,
-                TrialVoucher = 0,
+                TrialVoucher = d.TrialVoucher,
                 TreasuerBox = d.TreasuerBox,
                 // HomeAFK 映射到 RoleM.BoxTimeAllSecound，决定大厅挂机状态：
                 //   <= 0 → AnimType.Idle（主角站着不动）
@@ -152,6 +223,9 @@ namespace HotUpdateScripts.LocalNet
         /// </summary>
         private static long GetHomeAFKRemaining(LocalData data)
         {
+            LocalRole current = data != null ? data.Current : null;
+            EnsureHomeAFKReset(current);
+
             long baseSeconds = 7200L;
             try
             {
@@ -166,10 +240,29 @@ namespace HotUpdateScripts.LocalNet
                 // 配置未加载时保留服务端当前默认值 7200。
             }
 
-            long used = data != null && data.Current != null
-                ? data.Current.HomeAFKUsedSec : 0L;
+            long used = current != null ? current.HomeAFKUsedSec : 0L;
             long remaining = baseSeconds - used;
             return remaining > 0 ? remaining : 0L;
+        }
+
+        /// <summary>
+        /// 大厅挂机时间按自然日重置。服务端由 TimerFor0Oclock 清 vitalityTime，
+        /// 单机没有跨天定时器，在登录/结算入口做同样的惰性重置。
+        /// </summary>
+        public static void EnsureHomeAFKReset(LocalRole role)
+        {
+            if (role == null)
+                return;
+
+            int today = int.Parse(System.DateTime.Now.ToString("yyyyMMdd"));
+            if (role.HomeAFKResetDay == today)
+                return;
+
+            role.HomeAFKResetDay = today;
+            role.HomeAFKUsedSec = 0;
+            role.HomeAFKAnchorUnix = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            SaveCoordinator.Instance.MarkDirty();
+            JEngine.Core.Log.Print("[LocalPusher] HomeAFK daily reset day=" + today);
         }
 
         /// <summary>角色属性：决定血条、战力、攻防显示</summary>
@@ -242,15 +335,68 @@ namespace HotUpdateScripts.LocalNet
                         item = tmp;
                 }
 
+                // 魂石：长度必须是 4 —— 客户端镶嵌面板按 0..3 四个槽位索引访问
+                // （UIBuild_Equip.OnInSetUI 里 Diamond_OpenlvDic[i+1] 循环 4 次）。
+                var gems = new int[LocalRole.GemSlotCount];
+                int[] raw = i >= 1 && i < max ? role.PeekEquipGems((EquipSlot)i) : null;
+                if (raw != null)
+                {
+                    for (int g = 0; g < gems.Length && g < raw.Length; g++)
+                        gems[g] = raw[g];
+                }
+
                 list.Add(new SlotInfo
                 {
                     Item = item ?? new ItemInfo(),
-                    Gemstone = new int[3],   // 客户端宝石镶嵌会按索引访问
+                    Gemstone = gems,
                 });
             }
 
             JEvent.defaultEvent.Post(new SyncUserEquipsInfoPush { Equips = list });
             JEngine.Core.Log.Print($"[LocalPusher] 同步装备 {list.Count} 个槽位，其中穿戴 {role.Equips.Count} 件");
+        }
+
+        /// <summary>
+        /// 战宠数据（对应客户端 Sever_SyncUserPetInfoPush）。
+        /// 必须推满 21 个槽位：PetM.GetOnePetByIdx(0) 是大厅 SetPetSpine 的上阵宠物，
+        /// UIPet 会按索引 0..20 遍历包裹，长度不足直接 ArgumentOutOfRange。
+        /// </summary>
+        private void PushUserPet()
+        {
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+                return;
+
+            role.EnsurePetSlots();
+            var list = new List<PetSlotInfo>(LocalRole.PetSlotCount);
+            for (int i = 0; i < LocalRole.PetSlotCount; i++)
+            {
+                PetSlotInfo pet = role.PetSlots[i];
+                list.Add(pet == null ? new PetSlotInfo() : new PetSlotInfo
+                {
+                    Uid = pet.Uid,
+                    CfgId = pet.CfgId,
+                    Level = pet.Level,
+                    Star = pet.Star,
+                    Exp = pet.Exp,
+                    ExpStar = pet.ExpStar,
+                    Quality = pet.Quality,
+                });
+            }
+
+            JEvent.defaultEvent.Post(new SyncUserPetInfoPush
+            {
+                Pet = list,
+                PetEverHave = role.PetEverHave == null
+                    ? new int[0] : role.PetEverHave.ToArray(),
+            });
+            JEngine.Core.Log.Print($"[LocalPusher] 同步战宠 {LocalRole.PetSlotCount} 个槽位");
+        }
+
+        /// <summary>宠物状态变化（升级/升星/换位/获得）后立即刷新。</summary>
+        public void PushUserPetNow()
+        {
+            PushUserPet();
         }
 
         /// <summary>伙伴槽位：底部「伙伴1-4」的占位</summary>
@@ -267,8 +413,178 @@ namespace HotUpdateScripts.LocalNet
         /// </summary>
         private void PushSkillSlot()
         {
+            LocalRole role = LocalData.Instance.Current;
             var slots = new int[13];
+            if (role != null && role.SkillSlots != null)
+            {
+                for (int i = 0; i < 13 && i < role.SkillSlots.Length; i++)
+                    slots[i] = role.SkillSlots[i];
+            }
             JEvent.defaultEvent.Post(new SyncUserSkillSlotPush { SkillsSlot = slots });
+        }
+
+        /// <summary>技能槽变化后立即刷新。</summary>
+        public void PushSkillSlotNow()
+        {
+            PushSkillSlot();
+        }
+
+        public void PushPlayerEnterDeskNow(PlayerInfo player)
+        {
+            if (player == null)
+                return;
+            JEvent.defaultEvent.Post(new PlayerEnterDeskPush
+            {
+                Data = new System.Collections.Generic.List<PlayerInfo> { player },
+            });
+        }
+
+        public void PushBattleMoveNow(MovePush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        public void PushBattleAttackNow(AttackPush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        public void PushBattleHpNow(ObjectHpChangePush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        public void PushBattleDieNow(ObjectDiePush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        /// <summary>
+        /// 装备强化成功推送。客户端 Sever_EnhanceResponse 会
+        /// RoleM.SetEquipeReinforeceLv(slot, newLevel) 并刷界面。
+        /// </summary>
+        public void PushEquipEnhanceNow(EquipSlot slot, int newLevel)
+        {
+            JEvent.defaultEvent.Post(new EnhanceResponse
+            {
+                Code = 0,
+                Error = "",
+                NewLevel = newLevel,
+                Slot = slot,
+                PartnerSlotId = 0,
+            });
+        }
+
+        /// <summary>
+        /// 装备升星推送。客户端 Sever_StarsResponse 会
+        /// RoleM.SetEquipeReinforeceLv(slot, newLevel) 并刷界面。
+        /// </summary>
+        public void PushEquipStarNow(EquipSlot slot, int newLevel)
+        {
+            JEvent.defaultEvent.Post(new StarsResponse
+            {
+                Code = 0,
+                Error = "",
+                NewLevel = newLevel,
+                Slot = slot,
+                PartnerSlotId = 0,
+            });
+        }
+
+        /// <summary>副本信息刷新（首领剩余次数等），客户端 Sever_C2S_InstanceInfo 会更新界面。</summary>
+        public void PushInstanceInfoNow(InstanceInfoResponse data)
+        {
+            if (data != null)
+                JEvent.defaultEvent.Post(data);
+        }
+
+        /// <summary>
+        /// 战斗场景对象进场上报。客户端 Sever_GameObjectAddPush →
+        /// FightController.CreatGameObject，伙伴就是靠这个生成模型的。
+        /// </summary>
+        public void PushBattleObjectAddNow(GameObjectAddPush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        /// <summary>伙伴槽位更新推送，客户端 Sever_PartnerSlotUpdatePush 会刷伙伴界面。</summary>
+        public void PushPartnerSlotNow(PartnerSlotInfoResponse data)
+        {
+            if (data == null)
+                return;
+            var packet = new PartnerSlotUpdatePush();
+            if (data.List != null)
+                packet.List.AddRange(data.List);
+            JEvent.defaultEvent.Post(packet);
+        }
+
+        /// <summary>技能冷却推送，客户端 Sever_SkillCooldownPush 会写 SkillM 并刷 UI。</summary>
+        public void PushSkillCooldownNow(SkillCooldownPush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        public void PushBattleResultNow(GameResultBattlePush packet)
+        {
+            if (packet != null)
+                JEvent.defaultEvent.Post(packet);
+        }
+
+        /// <summary>登录时把任务列表推给 TaskM。</summary>
+        public void PushAllTasksNow(LocalRole role)
+        {
+            if (role == null || role.Tasks == null)
+                return;
+            for (int i = 0; i < role.Tasks.Count; i++)
+                PushTaskAcceptNow(role.Tasks[i]);
+        }
+
+        public void PushTaskAcceptNow(TaskInfo task)
+        {
+            if (task == null)
+                return;
+            JEvent.defaultEvent.Post(new TaskAcceptPush { task = task });
+        }
+
+        public void PushTaskUpdateNow(TaskInfo task)
+        {
+            if (task == null)
+                return;
+            JEvent.defaultEvent.Post(new TaskUpdatePush { task = task });
+        }
+
+        /// <summary>登录时把已存档技能全部补推给 SkillM。</summary>
+        public void PushAllSkillsNow(LocalRole role)
+        {
+            if (role == null || role.Skills == null)
+                return;
+            for (int i = 0; i < role.Skills.Count; i++)
+                PushNewSkillNow(role.Skills[i]);
+        }
+
+        /// <summary>学习新技能后通知技能面板，并为技能槽刷新做准备。</summary>
+        public void PushNewSkillNow(SkillInfo skill)
+        {
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null || skill == null)
+                return;
+            var slots = new int[13];
+            if (role.SkillSlots != null)
+            {
+                for (int i = 0; i < 13 && i < role.SkillSlots.Length; i++)
+                    slots[i] = role.SkillSlots[i];
+            }
+            JEvent.defaultEvent.Post(new NewSkillPush
+            {
+                skill = skill,
+                SkillsSlot = slots,
+            });
         }
 
     }

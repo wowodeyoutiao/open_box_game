@@ -24,6 +24,8 @@ namespace HotUpdateScripts.LocalNet
         public long Diamanta;
         public long Coupon;
         public long Soul;
+        /// <summary>试炼积分（item id=8 SLPZ），试炼商城货币。</summary>
+        public long TrialVoucher;
         public long Energy = 100;
 
         // 战斗属性运行时缓存；正式结果由 RoleStatService 统一计算。
@@ -36,13 +38,200 @@ namespace HotUpdateScripts.LocalNet
         // 背包 / 伙伴
         public Bag BagData = new Bag();
         public List<PartnerInfo> Partners = new List<PartnerInfo>();
+        /// <summary>
+        /// 伙伴上阵槽位。原服 Player.partnerSlots 是 [MaxPartnerNum=4] 固定数组。
+        /// 单机不按 VIP 卡槽位，直接给满 4 个（VIP 配置里 Partnerslot 全为 0）。
+        /// </summary>
+        public List<PartnerSlotInfo> PartnerSlots = new List<PartnerSlotInfo>();
+
+        // 战宠。原服 Player.pet 是 [PetsSlot_MaxPetsSlot=21] 定长数组：
+        //   0 号 = 上阵位（只有它提供属性加成）
+        //   1..20 = 包裹格（config.xml <petbag totlenum="20"/>）
+        // 槽位永远保持 21 条（空位是 CfgId=0 的空对象），客户端 PetM.GetOnePetByIdx 按索引取。
+        public const int PetSlotCount = (int)PetsSlot.MaxPetsSlot;
+
+        /// <summary>上阵宠物槽位（原服 p.pet[0]）。</summary>
+        public const int ActivePetSlot = 0;
+
+        /// <summary>宠物槽位列表，长度恒为 <see cref="PetSlotCount"/>。</summary>
+        public List<PetSlotInfo> PetSlots = new List<PetSlotInfo>();
+
+        /// <summary>已获得过的宠物（原服 petEverHave），图鉴/红点用。</summary>
+        public List<int> PetEverHave = new List<int>();
+
+        // 上阵宠物离线收益（原服 pet.OfflineAward + petGold / petExp 累计上限）
+        /// <summary>上次结算离线收益的时间（Unix 秒）。</summary>
+        public long PetAwardAnchorUnix;
+        /// <summary>宠物累计产出的经验（对齐原服 petExp，达到配置 max 后不再产出）。</summary>
+        public long PetAwardExpTotal;
+        /// <summary>宠物累计产出的金币（对齐原服 petGold，达到配置 max 后不再产出）。</summary>
+        public long PetAwardGoldTotal;
+
+        // 商城购买记录（限购统计用，原服写 db.Store 表）
+        // 每 3 个 long 一条记录：[商品ID, 数量, 购买时间Unix秒]。
+        // 之所以不定义 StoreBuyRecord 类：ILRuntime 里「热更内自定义类型作 List 泛型参数
+        // + 索引器读字段」会抛 NotImplementedException，用基础类型平铺最稳。
+        public List<long> StoreBuyLog = new List<long>();
+
+        // 首领副本（module 17，Lv20）
+        /// <summary>首领通关进度（已通关的最大 BattleId）。</summary>
+        public int BossId;
+        /// <summary>今日剩余挑战次数。</summary>
+        public int BossChallengeTime;
+        /// <summary>挑战次数重置日（yyyyMMdd）。</summary>
+        public int BossResetDay;
+
+        // 遗迹（RoomType 17，战役型副本，200 关）
+        /// <summary>遗迹进度（已通关的最高 BattleId）。</summary>
+        public int RelicId;
+        /// <summary>今日剩余遗迹挑战次数。</summary>
+        public int RelicChallengeTime;
+        /// <summary>遗迹次数重置日（yyyyMMdd）。</summary>
+        public int RelicResetDay;
+        /// <summary>遗迹通关评价（BattleId → 星数 1~3，对应 pb.KeyValue 的 K/V）。</summary>
+        public List<KeyValue> RelicEvaluation = new List<KeyValue>();
+        /// <summary>
+        /// 遗迹章节星级宝箱已领到第几档（Chapter → 已领取的星数档位 10/20/30，对应 pb.KeyValue 的 K/V）。
+        /// 对齐原服 RelicMap.ChapterReward：每章按「本章各关星级之和」解锁 10/20/30 三档，只能往后领。
+        /// </summary>
+        public List<KeyValue> RelicChapterReward = new List<KeyValue>();
+
+        // 挂机副本（守卫海岛，RoomType 1）
+        /// <summary>今日已用挂机秒数（对齐原服 afkDailyTime）。</summary>
+        public int AfkDailySec;
+        /// <summary>挂机时长重置日（yyyyMMdd）。</summary>
+        public int AfkResetDay;
+        /// <summary>
+        /// 挂机倍率 ID（对齐原服 AfkMultiplierID，每天重置）。
+        /// 单机版不接广告/元宝/充值，只用免费档 0（multiplier=0，即 ×1）。
+        /// </summary>
+        public long AfkMultiplierID;
+
+        // 每日副本（RoomType 7..12：经验/金币/强化石/书页/升星石/魂石）
+        /// <summary>各每日副本今日剩余次数（key = RoomType 整型值）。</summary>
+        public Dictionary<int, int> DailyMapTimes = new Dictionary<int, int>();
+        /// <summary>每日副本挑战次数重置日（yyyyMMdd）。</summary>
+        public int DailyMapResetDay;
+
+        // 试炼塔副本（module 19，Lv30）
+        /// <summary>试炼塔进度（已通关的最高层 BattleId）。</summary>
+        public int TrialTowerId;
 
         /// <summary>身上已穿戴的装备（按部位）</summary>
         public Dictionary<EquipSlot, ItemInfo> Equips = new Dictionary<EquipSlot, ItemInfo>();
 
+        /// <summary>
+        /// 各部位装备强化等级（对齐原服 Slot.Enhance）。
+        /// **强化是跟着槽位走的，不是跟着装备实例** —— 换装备不重置强化等级。
+        /// 所以单独存一份，卸下装备时也保留。
+        /// </summary>
+        public Dictionary<EquipSlot, int> EquipEnhance = new Dictionary<EquipSlot, int>();
+
+        /// <summary>取某个部位的强化等级（没记录返回 0）。</summary>
+        public int GetEquipEnhance(EquipSlot slot)
+        {
+            if (EquipEnhance == null)
+                return 0;
+            int level;
+            return EquipEnhance.TryGetValue(slot, out level) ? level : 0;
+        }
+
+        /// <summary>
+        /// 各部位装备星级（对齐原服 Slot.Stars）。
+        /// 同强化一样，**星级跟着槽位走**，换装备不重置。
+        /// </summary>
+        public Dictionary<EquipSlot, int> EquipStars = new Dictionary<EquipSlot, int>();
+
+        /// <summary>取某个部位的星级（没记录返回 0）。</summary>
+        public int GetEquipStars(EquipSlot slot)
+        {
+            if (EquipStars == null)
+                return 0;
+            int stars;
+            return EquipStars.TryGetValue(slot, out stars) ? stars : 0;
+        }
+
+        /// <summary>每件装备的魂石槽数量（原服 pb.GemstoneSlot_MaxGemstoneSlot）。</summary>
+        public const int GemSlotCount = 4;
+
+        /// <summary>
+        /// 各部位装备上镶嵌的魂石（对齐原服 Slot.Gemstone[MaxGemstoneSlot]）。
+        ///
+        /// - 下标 0..3 对应客户端 4 个魂石槽；
+        /// - 存的是魂石的**道具配置 ID**（0 = 空槽）；
+        /// - 和强化/星级一样**跟着槽位走**，换装备保留。
+        /// </summary>
+        public Dictionary<EquipSlot, int[]> EquipGems = new Dictionary<EquipSlot, int[]>();
+
+        /// <summary>取某部位的魂石槽数组（没有就补一个长度 4 的空数组）。</summary>
+        public int[] GetEquipGems(EquipSlot slot)
+        {
+            if (EquipGems == null)
+                EquipGems = new Dictionary<EquipSlot, int[]>();
+            int[] gems;
+            if (!EquipGems.TryGetValue(slot, out gems) || gems == null || gems.Length != GemSlotCount)
+            {
+                gems = new int[GemSlotCount];
+                EquipGems[slot] = gems;
+            }
+            return gems;
+        }
+
+        /// <summary>某部位是否镶嵌了魂石（属性结算用，不补建数组）。</summary>
+        public int[] PeekEquipGems(EquipSlot slot)
+        {
+            if (EquipGems == null)
+                return null;
+            int[] gems;
+            return EquipGems.TryGetValue(slot, out gems) ? gems : null;
+        }
+
+        /// <summary>
+        /// 保证宠物槽位列表长度恒为 <see cref="PetSlotCount"/>（21）。
+        /// 存档迁移、老档没这个字段、UI 按索引访问都会踩到「长度不足」，
+        /// 所以读宠物数据前统一先补位（空位是 CfgId=0 的空对象）。
+        /// </summary>
+        public void EnsurePetSlots()
+        {
+            if (PetSlots == null)
+                PetSlots = new List<PetSlotInfo>();
+            while (PetSlots.Count < PetSlotCount)
+                PetSlots.Add(new PetSlotInfo());
+            while (PetSlots.Count > PetSlotCount)
+                PetSlots.RemoveAt(PetSlots.Count - 1);
+            for (int i = 0; i < PetSlots.Count; i++)
+            {
+                if (PetSlots[i] == null)
+                    PetSlots[i] = new PetSlotInfo();
+            }
+        }
+
+        /// <summary>取某个宠物槽位（越界返回 null，不抛异常）。</summary>
+        public PetSlotInfo GetPetSlot(int slotId)
+        {
+            EnsurePetSlots();
+            if (slotId < 0 || slotId >= PetSlots.Count)
+                return null;
+            return PetSlots[slotId];
+        }
+
+        /// <summary>上阵宠物（0 号槽）。没宠物时返回 CfgId=0 的空对象，不是 null。</summary>
+        public PetSlotInfo GetActivePet()
+        {
+            return GetPetSlot(ActivePetSlot);
+        }
+
+        /// <summary>某槽位是否有宠物。</summary>
+        public bool HasPet(int slotId)
+        {
+            PetSlotInfo pet = GetPetSlot(slotId);
+            return pet != null && pet.CfgId > 0;
+        }
+
         // 挂机进度
         public long HomeAFKUsedSec;
         public long HomeAFKAnchorUnix;
+        public int HomeAFKResetDay;
         public long LastSeenUnix;
 
         // 大厅宝箱
@@ -51,6 +240,23 @@ namespace HotUpdateScripts.LocalNet
         public long BoxQuick;
         public long BoxUpgradeEndUnix;
         public List<ItemInfo> BoxOpenItems = new List<ItemInfo>();
+
+        // 系统邮件（单机替代服务端邮件库）
+        public List<LocalMail> Mails = new List<LocalMail>();
+
+        // 角色技能与 13 个技能槽
+        public List<SkillInfo> Skills = new List<SkillInfo>();
+        public int[] SkillSlots = new int[13];
+
+        // 自动分解设置
+        public AutoDisassemblyInfo AutoDisassembly = new AutoDisassemblyInfo();
+
+        // 任务
+        public List<TaskInfo> Tasks = new List<TaskInfo>();
+
+        // 普通战役进度
+        public int BattleId;
+        public int BattleRewardStage;
 
         public LocalRole Clone()
         {
@@ -76,6 +282,7 @@ namespace HotUpdateScripts.LocalNet
                 TotalCombat = TotalCombat,
                 HomeAFKUsedSec = HomeAFKUsedSec,
                 HomeAFKAnchorUnix = HomeAFKAnchorUnix,
+                HomeAFKResetDay = HomeAFKResetDay,
                 LastSeenUnix = LastSeenUnix,
                 BoxLevel = BoxLevel,
                 TreasuerBox = TreasuerBox,
@@ -84,7 +291,16 @@ namespace HotUpdateScripts.LocalNet
                 BoxOpenItems = new List<ItemInfo>(),
                 BagData = new Bag { ItemList = new List<ItemInfo>() },
                 Partners = new List<PartnerInfo>(),
-                Equips = new Dictionary<EquipSlot, ItemInfo>()
+                PartnerSlots = new List<PartnerSlotInfo>(),
+                PetSlots = new List<PetSlotInfo>(),
+                PetEverHave = new List<int>(),
+                Equips = new Dictionary<EquipSlot, ItemInfo>(),
+                Mails = new List<LocalMail>(),
+                Skills = new List<SkillInfo>(),
+                SkillSlots = new int[13],
+                BattleId = BattleId,
+                BattleRewardStage = BattleRewardStage,
+                AutoDisassembly = new AutoDisassemblyInfo()
             };
 
             if (BoxOpenItems != null)
@@ -117,6 +333,45 @@ namespace HotUpdateScripts.LocalNet
                 }
             }
 
+            if (PartnerSlots != null)
+            {
+                for (int i = 0; i < PartnerSlots.Count; i++)
+                {
+                    PartnerSlotInfo slot = PartnerSlots[i];
+                    if (slot == null)
+                        continue;
+                    clone.PartnerSlots.Add(new PartnerSlotInfo
+                    {
+                        SlotId = slot.SlotId,
+                        PartnerUid = slot.PartnerUid,
+                        Equips = new List<SlotInfo>(),
+                    });
+                }
+            }
+
+            if (PetSlots != null)
+            {
+                for (int i = 0; i < PetSlots.Count; i++)
+                {
+                    PetSlotInfo pet = PetSlots[i];
+                    clone.PetSlots.Add(pet == null ? new PetSlotInfo() : new PetSlotInfo
+                    {
+                        Uid = pet.Uid,
+                        CfgId = pet.CfgId,
+                        Level = pet.Level,
+                        Star = pet.Star,
+                        Exp = pet.Exp,
+                        ExpStar = pet.ExpStar,
+                        Quality = pet.Quality,
+                        Enhance = pet.Enhance,
+                        Skill = pet.Skill,
+                    });
+                }
+            }
+
+            if (PetEverHave != null)
+                clone.PetEverHave.AddRange(PetEverHave);
+
             if (Equips != null)
             {
                 foreach (KeyValuePair<EquipSlot, ItemInfo> kv in Equips)
@@ -125,6 +380,45 @@ namespace HotUpdateScripts.LocalNet
                     if (item != null)
                         clone.Equips[kv.Key] = item;
                 }
+            }
+
+            if (EquipGems != null)
+            {
+                foreach (KeyValuePair<EquipSlot, int[]> kv in EquipGems)
+                {
+                    if (kv.Value == null)
+                        continue;
+                    clone.EquipGems[kv.Key] = (int[])kv.Value.Clone();
+                }
+            }
+
+            if (Skills != null)
+            {
+                for (int i = 0; i < Skills.Count; i++)
+                {
+                    SkillInfo skill = Skills[i];
+                    if (skill == null) continue;
+                    clone.Skills.Add(new SkillInfo
+                    {
+                        CfgId = skill.CfgId,
+                        Cooldown = skill.Cooldown,
+                        Advanced = skill.Advanced,
+                    });
+                }
+            }
+            if (SkillSlots != null)
+                clone.SkillSlots = (int[])SkillSlots.Clone();
+            if (AutoDisassembly != null)
+            {
+                clone.AutoDisassembly = new AutoDisassemblyInfo
+                {
+                    Open = AutoDisassembly.Open,
+                    LevelSwitch = AutoDisassembly.LevelSwitch,
+                    Level = AutoDisassembly.Level,
+                    QualitySwitch = AutoDisassembly.QualitySwitch,
+                    Quality = AutoDisassembly.Quality,
+                    HighCombat = AutoDisassembly.HighCombat,
+                };
             }
 
             return clone;
@@ -205,6 +499,20 @@ namespace HotUpdateScripts.LocalNet
     /// 唯一真相源是 Roles。下面的扁平字段是当前角色的只读镜像，
     /// 只在 SelectRole() 时展开；存档只保存 Roles 及账号级 UID 游标。
     /// </summary>
+    /// <summary>单机系统邮件。附件直接保存 ItemInfo，领取时再进入背包。</summary>
+    public class LocalMail
+    {
+        public string MailId = "";
+        public string Title = "";
+        public string Desc = "";
+        public int IsRead;
+        public int IsExtract;
+        public int IsAttachments;
+        public long CreatedAt;
+        public long ExpiryAt;
+        public List<ItemInfo> Attachments = new List<ItemInfo>();
+    }
+
     public class LocalData : SingletonTemplate<LocalData>
     {
         public const long DefaultNextRoleUid = 10001L;
@@ -248,6 +556,7 @@ namespace HotUpdateScripts.LocalNet
         public long Diamond;
         public long Coupon;
         public long Soul;
+        public long TrialVoucher;
         public long Energy = 100;
 
         public int Attack = 10;
@@ -441,6 +750,7 @@ namespace HotUpdateScripts.LocalNet
             Diamond = r.Diamanta;
             Coupon = r.Coupon;
             Soul = r.Soul;
+            TrialVoucher = r.TrialVoucher;
             Energy = r.Energy;
 
             Attack = r.Attack;
@@ -536,6 +846,7 @@ namespace HotUpdateScripts.LocalNet
             r.Diamanta = Diamond;
             r.Coupon = Coupon;
             r.Soul = Soul;
+            r.TrialVoucher = TrialVoucher;
             r.Energy = Energy;
             r.Attack = Attack;
             r.Defense = Defense;

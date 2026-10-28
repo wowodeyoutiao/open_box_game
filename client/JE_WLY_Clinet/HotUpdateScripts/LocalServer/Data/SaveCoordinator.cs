@@ -37,6 +37,16 @@ namespace HotUpdateScripts.LocalNet
             _provider = provider;
         }
 
+#if LOCAL_TEST
+        /// <summary>仅供测试使用，替换存档 Provider 并返回旧值；正式包不包含。</summary>
+        public ISaveProvider SwapProviderForTest(ISaveProvider provider)
+        {
+            ISaveProvider old = _provider;
+            _provider = provider;
+            return old;
+        }
+#endif
+
         public void Initialize()
         {
             if (_ready)

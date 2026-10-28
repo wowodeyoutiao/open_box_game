@@ -39,6 +39,12 @@ public class CFGItem_Battle : CFGItemBase
     /// </summary>
     public int Layers;
 
+    // ⚠️ battle.json 里有个 MapMark（1.0 / null），原服用它判断章末关。
+    //    但 LitJson 在 ILRuntime 下对 JSON null 会给值类型字段塞 null 引用，
+    //    无论写 int / decimal? / decimal 都会在读取时 NRE（实测三种都炸）。
+    //    所以**不接这个字段**，改用 Layers 连续推断章末（见 BattleService.GetNextRelicId）。
+
+
     /// <summary>
     /// 刷怪配置
     /// </summary>
@@ -53,6 +59,13 @@ public class CFGItem_Battle : CFGItemBase
     {
         public int id;
         public int num;
+        public PointItem point;
+    }
+
+    public struct PointItem
+    {
+        public int x;
+        public int y;
     }
 
     /// <summary>
@@ -96,6 +109,8 @@ public class CFGItem_Battle : CFGItemBase
     public decimal MapID;
 
     public decimal MonsterShow;
+
+    public decimal Timelimit;
 
 }
 

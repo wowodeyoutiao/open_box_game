@@ -2515,7 +2515,36 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
         SetBgMove(true);
 
         if (HotUpdateScripts.LocalNet.LocalServer.Enabled)
+        {
+            HotUpdateScripts.LocalNet.LocalRole localRole =
+                HotUpdateScripts.LocalNet.LocalData.Instance.Current;
+            if (localRole != null)
+            {
+                HotUpdateScripts.LocalNet.TaskService.Instance.Dispatch(
+                    localRole, TargetType.KILL_MONSTER_REQUIREMENT, 0, 1);
+                HotUpdateScripts.LocalNet.TaskService.Instance.Dispatch(
+                    localRole, TargetType.TOTAL_KILLS_OF_NORMAL_MONSTERS, 0, 1);
+            }
             HotUpdateScripts.LocalNet.BoxService.Instance.AddTreasure(1);
+
+            var idle = HotUpdateScripts.LocalNet.IdleRewardService.Instance.SettleCurrent();
+            if (idle != null && idle.Applied)
+            {
+                HotUpdateScripts.LocalNet.LocalPusher.Instance.PushUserBaseNow();
+                HotUpdateScripts.LocalNet.LocalPusher.Instance.PushBagInfoNow();
+                if (idle.LevelsGained > 0)
+                {
+                    HotUpdateScripts.LocalNet.LocalPusher.Instance.PushStatsNow();
+                    HotUpdateScripts.LocalNet.LocalPusher.Instance.PushLevelUpNow(idle.NewLevel);
+                }
+                if (idle.Mailed)
+                    UITool.ShowTips("背包已满，奖励已转邮件");
+            }
+            else if (idle != null && idle.BagFull)
+            {
+                UITool.ShowTips(idle.Error);
+            }
+        }
 
         if (DownUI != null && GetView().obj_fly != null)
         {

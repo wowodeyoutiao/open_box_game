@@ -47,6 +47,11 @@ public class CFGItem_Item : CFGItemBase
     public decimal? Quality;
 
     /// <summary>
+    /// 分解产出。JSON 形如 [{"1":100},{"2":155}]。
+    /// </summary>
+    public Dictionary<string, int>[] Decompose;
+
+    /// <summary>
     /// 排序优先级 用来表示当前道具在包裹中的排列优先级，优先级数值越高，代表着该道具在包裹中的排序越靠前
     /// </summary>
     public decimal? Priority;

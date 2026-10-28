@@ -42,6 +42,8 @@ public class CFG_All
         typeof(CFG_Battle),
         typeof(CFG_BoxLevel),
         typeof(CFG_OpenBox),
+        typeof(CFG_MainTrigger),
+        typeof(CFG_LevelGift),
         typeof(CFG_Actionset),
     };
 
