@@ -1197,6 +1197,76 @@ namespace HotUpdateScripts.LocalNet
             }
         }
 
+        /// <summary>
+        /// 扣减一种资产（GrantReward 的反向操作）。
+        /// 不足时返回 false 且**不做任何修改**，调用方据此报错。
+        /// </summary>
+        public bool TryConsumeId(LocalRole role, int cfgId, long num)
+        {
+            if (role == null || cfgId <= 0 || num <= 0)
+                return false;
+            switch (cfgId)
+            {
+                case 1:
+                    if (role.Coin < num) return false;
+                    role.Coin -= num;
+                    LocalData.Instance.Gold = role.Coin;
+                    return true;
+                case 4:
+                    if (role.Soul < num) return false;
+                    role.Soul -= num;
+                    LocalData.Instance.Soul = role.Soul;
+                    return true;
+                case 5:
+                    if (role.Coupon < num) return false;
+                    role.Coupon -= num;
+                    LocalData.Instance.Coupon = role.Coupon;
+                    return true;
+                case 8:
+                    if (role.TrialVoucher < num) return false;
+                    role.TrialVoucher -= num;
+                    LocalData.Instance.TrialVoucher = role.TrialVoucher;
+                    return true;
+                case 14:
+                    if (role.TreasuerBox < num) return false;
+                    role.TreasuerBox -= num;
+                    LocalData.Instance.TreasuerBox = role.TreasuerBox;
+                    return true;
+                case 99:
+                    if (role.BoxQuick < num) return false;
+                    role.BoxQuick -= num;
+                    LocalData.Instance.BoxQuick = role.BoxQuick;
+                    return true;
+            }
+
+            // 背包道具：先确认够，再扣
+            if (role.BagData == null || role.BagData.ItemList == null)
+                return false;
+            long total = 0;
+            for (int i = 0; i < role.BagData.ItemList.Count; i++)
+            {
+                ItemInfo it = role.BagData.ItemList[i];
+                if (it != null && it.CfgId == cfgId)
+                    total += it.Num;
+            }
+            if (total < num)
+                return false;
+
+            long remain = num;
+            for (int i = role.BagData.ItemList.Count - 1; i >= 0 && remain > 0; i--)
+            {
+                ItemInfo it = role.BagData.ItemList[i];
+                if (it == null || it.CfgId != cfgId)
+                    continue;
+                long take = System.Math.Min(it.Num, remain);
+                it.Num -= (int)take;
+                remain -= take;
+                if (it.Num <= 0)
+                    role.BagData.ItemList.RemoveAt(i);
+            }
+            return remain <= 0;
+        }
+
         public bool GrantReward(LocalRole role, int cfgId, long num)
         {
             if (role == null || cfgId <= 0 || num <= 0)

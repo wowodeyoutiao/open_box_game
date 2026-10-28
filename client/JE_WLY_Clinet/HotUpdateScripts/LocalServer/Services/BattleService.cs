@@ -26,6 +26,8 @@ namespace HotUpdateScripts.LocalNet
         private const long LoopTickMs = 5;
         private const int DefaultAttackIntervalMs = 1000;
         private const int DeadSettleDelayMs = 1500;
+        /// <summary>每日副本的死亡等待期（原服 desk.go：60 秒内可复活，超时才判负）。</summary>
+        private const int DailyDeadWaitMs = 60000;
         private const int WinSettleDelayMs = 3000;
         /// <summary>客户端 monster.moveTo 是 0.8s 补间，推太密会互相打断，这里做节流。</summary>
         private const int MinMovePushIntervalMs = 700;
@@ -219,6 +221,8 @@ namespace HotUpdateScripts.LocalNet
             public bool PartnerAggroed;
             public long AllDeadAtMs;
             public long PlayerDeadAtMs;
+            /// <summary>本次战斗已用掉的复活次数（原服 Player.reviveTimes，按场次累计）。</summary>
+            public int ReviveTimes;
             /// <summary>
             /// 可行走矩形。对齐 SceneManager.loadMapInfo 的 OffX=6 / OffY=13 内缩规则，
             /// 客户端 GetOffZ 在越界时返回 Block，服务端必须钳制否则表现会错位。
@@ -1226,6 +1230,117 @@ namespace HotUpdateScripts.LocalNet
             return false;
         }
 
+        /// <summary>
+        /// 复活（对齐原服 RoomManager.Revive）。
+        ///
+        /// 允许范围：除试炼塔 / 世界 Boss 外的房间（原服 -3）。
+        /// 次数与消耗来自 config.xml 的 &lt;Revive&gt;&lt;key time needMoneyID num /&gt;，
+        /// key 是「第几次复活」，用完返回 -4。
+        ///
+        /// 每日副本的死亡判负被拉长到 60 秒（见 DailyDeadWaitMs），
+        /// 所以玩家在这段时间内点复活是有效的。
+        /// </summary>
+        public object Revive(byte[] req)
+        {
+            BattleRuntime runtime = _runtime;
+            var res = new ReviveResponse { Code = 0, Error = "" };
+
+            if (runtime == null || runtime.Ended)
+            {
+                res.Code = -1;
+                res.Error = "不在战斗中";
+                return res;
+            }
+
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            if (!runtime.Player.Dead)
+            {
+                res.Code = -2;
+                res.Error = "角色未死亡";
+                return res;
+            }
+
+            int roomType = runtime.RoomType;
+            if (roomType == (int)CFG_Room.RoomType.SLTower
+                || roomType == (int)CFG_Room.RoomType.WorldBoss)
+            {
+                res.Code = -3;
+                res.Error = "该玩法不支持复活";
+                return res;
+            }
+
+            CFG_XMLConfig.XML_Config.XML_Item_Revive cost = GetReviveCost(runtime.ReviveTimes + 1);
+            if (cost == null)
+            {
+                res.Code = -4;
+                res.Error = "复活次数已用完";
+                return res;
+            }
+
+            if (!ItemService.Instance.TryConsumeId(role, cost.needMoneyID, cost.num))
+            {
+                res.Code = -5;
+                res.Error = "复活所需道具不足";
+                return res;
+            }
+
+            runtime.Player.Dead = false;
+            runtime.Player.Hp = runtime.Player.MaxHp;
+            runtime.PlayerDeadAtMs = 0;
+            runtime.ReviveTimes++;
+
+            role.CurHp = role.MaxHp;
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushStatsNow();
+
+            res.CurHp = runtime.Player.Hp;
+            res.Location = new Point { X = runtime.Player.X, Y = runtime.Player.Y };
+            return res;
+        }
+
+        /// <summary>取第 times 次复活的消耗配置；没有该档返回 null。</summary>
+        private static CFG_XMLConfig.XML_Config.XML_Item_Revive GetReviveCost(int times)
+        {
+            try
+            {
+                CFG_XMLConfig.XML_Config xml = CFG_XMLConfig.xmlConfig;
+                if (xml == null || xml.ReviveDic == null)
+                    return null;
+                CFG_XMLConfig.XML_Config.XML_Item_Revive cost;
+                return xml.ReviveDic.TryGetValue(times, out cost) ? cost : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>只读：本次战斗已用复活次数，测试用。</summary>
+        public int ReviveTimesInBattle
+        {
+            get { return _runtime == null ? 0 : _runtime.ReviveTimes; }
+        }
+
+        /// <summary>
+        /// 仅测试用：把战斗内玩家打成死亡状态，用来验证复活流程。
+        /// 生产逻辑不会走这里（真实死亡来自 ApplyHit）。
+        /// </summary>
+        public void TestKillPlayerForRevive()
+        {
+            if (_runtime == null || _runtime.Player == null)
+                return;
+            _runtime.Player.Hp = 0;
+            _runtime.Player.Dead = true;
+            _runtime.PlayerDeadAtMs = 0;
+        }
+
         public ExitResponse Exit()
         {
             var response = new ExitResponse { Code = 0, Error = "" };
@@ -1551,7 +1666,12 @@ namespace HotUpdateScripts.LocalNet
             // 处理延迟生效的伤害，对应原服 desk 主循环消费 chDelayAttack。
             ResolvePendingHits(runtime, nowMs);
             if (runtime.Player.Dead && runtime.PlayerDeadAtMs <= 0)
-                runtime.PlayerDeadAtMs = nowMs + DeadSettleDelayMs;
+            {
+                // 原服 desk.go 的死亡判定按房间类型分：
+                //   战役/首领/试炼塔/遗迹 → 1.5 秒后判负（来不及复活）
+                //   每日副本（经验/金币/强化石/书页）→ 60 秒等待期，期间可以花道具复活
+                runtime.PlayerDeadAtMs = nowMs + (IsDailyMapRoom(runtime.RoomType) ? DailyDeadWaitMs : DeadSettleDelayMs);
+            }
 
             // 「全清通关」只对 battle 型房间成立；刷怪型房间的怪会重生，清光也不是结束条件
             if (runtime.Cfg != null)

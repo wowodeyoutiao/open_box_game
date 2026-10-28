@@ -133,6 +133,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunSign());
                 if (scenario == "all" || scenario == "item_use")
                     cases.Add(RunItemUse());
+                if (scenario == "all" || scenario == "revive")
+                    cases.Add(RunRevive());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3100,6 +3102,87 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 复活：不在战斗被拒 → 未死亡被拒 → 死亡后复活成功（扣钻石、回满血、次数递增）。
+        /// 对齐原服 RoomManager.Revive。
+        /// </summary>
+        private static CaseResult RunRevive()
+        {
+            var result = new CaseResult("revive");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            long oldCoupon = role.Coupon;
+            try
+            {
+                BattleService.Instance.Exit();
+
+                // 1) 不在战斗中
+                object raw0 = BattleService.Instance.Revive(new byte[0]);
+                var r0 = raw0 as ReviveResponse;
+                result.Check(r0 != null && r0.Code == -1,
+                    "revive.noBattle=" + (r0 == null ? "null" : r0.Code));
+
+                // 2) 进入金币副本（每日副本允许复活）
+                role.Level = 45;
+                role.Coupon = 1000;
+                role.DailyMapResetDay = 0;
+                role.DailyMapTimes = new Dictionary<int, int>();
+                EnsureBattlePartner(role);
+                JoinDeskResponse enter = BattleService.Instance.Enter(new JoinDeskRequest
+                {
+                    RoomId = 201,
+                    BattleId = 0,
+                });
+                result.Check(enter != null && enter.Code == 0,
+                    "revive.enter=" + (enter == null ? -1 : enter.Code) + "/"
+                        + (enter == null ? "" : enter.Error));
+                if (enter == null || enter.Code != 0)
+                    return result;
+
+                // 3) 活着的时候复活被拒
+                object raw1 = BattleService.Instance.Revive(new byte[0]);
+                var r1 = raw1 as ReviveResponse;
+                result.Check(r1 != null && r1.Code == -2,
+                    "revive.alive=" + (r1 == null ? "null" : r1.Code));
+
+                // 4) 死亡后复活成功：扣 10 钻（config.xml Revive[1] = 5/10）、回满血
+                BattleService.Instance.TestKillPlayerForRevive();
+                long couponBefore = role.Coupon;
+                object raw2 = BattleService.Instance.Revive(new byte[0]);
+                var r2 = raw2 as ReviveResponse;
+                result.Check(r2 != null && r2.Code == 0,
+                    "revive.ok=" + (r2 == null ? "null" : r2.Code + "/" + r2.Error));
+                result.Check(role.Coupon == couponBefore - 10,
+                    "revive.cost=" + couponBefore + "->" + role.Coupon);
+                result.Check(r2 != null && r2.CurHp > 0, "revive.hp=" + (r2 == null ? 0 : r2.CurHp));
+                result.Check(BattleService.Instance.ReviveTimesInBattle == 1,
+                    "revive.times=" + BattleService.Instance.ReviveTimesInBattle);
+
+                // 5) 第二次复活消耗翻到 20（config.xml Revive[2] = 5/20）
+                BattleService.Instance.TestKillPlayerForRevive();
+                long couponBefore2 = role.Coupon;
+                object raw3 = BattleService.Instance.Revive(new byte[0]);
+                var r3 = raw3 as ReviveResponse;
+                result.Check(r3 != null && r3.Code == 0 && role.Coupon == couponBefore2 - 20,
+                    "revive.cost2=" + (r3 == null ? -99 : r3.Code) + "/" + role.Coupon);
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.Coupon = oldCoupon;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 使用道具：走 itemuse.json。
         /// 验证 可用道具生效 / 数量正确扣减 / 不可使用的道具被拒。
