@@ -543,7 +543,14 @@ namespace HotUpdateScripts.ProtoM
                       }
                       if (RedCount == 0)
                       {
-                          if (accumulateList[_response.data.accumulate_award.Length].Days < _response.data.day_award.day)
+                          // ⚠️ 原写法直接拿 accumulate_award.Length 当 accumulateList 的下标：
+                          //    accumulateList 只有「配了累计奖励」的那几天（通常 2~3 个），
+                          //    而已签天数（accumulate_award.Length）会一路涨到本轮总天数（如 30），
+                          //    一旦 Length >= accumulateList.Count 就数组越界崩溃。
+                          //    这里补上下标边界保护，语义不变。
+                          int accIdx = _response.data.accumulate_award.Length;
+                          if (accIdx >= 0 && accIdx < accumulateList.Count
+                              && accumulateList[accIdx].Days < _response.data.day_award.day)
                           {
                               RedCount = 1;
                           }

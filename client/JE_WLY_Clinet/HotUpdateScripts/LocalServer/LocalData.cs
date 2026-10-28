@@ -28,6 +28,18 @@ namespace HotUpdateScripts.LocalNet
         public long TrialVoucher;
         public long Energy = 100;
 
+        // ===== 签到进度（对齐原服 db.Sign 的 UserRound/Round/Day/CreatedAt）=====
+        // 原服 sign.json：Round=第几轮，Days=第几天，VIPLimit=达到该 VIP 奖励翻倍。
+        // 每天只能签一次；当天已签判负。跨天时 Day++，本轮满则 Round++（整轮满则 UserRound++ 重开）。
+        /// <summary>第几个大轮回（整轮打完后 +1，回到 Round=1）</summary>
+        public int SignUserRound = 1;
+        /// <summary>当前第几轮（对应 sign.json 的 Round）</summary>
+        public int SignRound = 1;
+        /// <summary>当前轮内第几天（对应 sign.json 的 Days，0 = 还没开始）</summary>
+        public int SignDay = 0;
+        /// <summary>上次签到的时间戳（秒），用来判断「今天签过没」</summary>
+        public long SignLastUnix = 0;
+
         // 战斗属性运行时缓存；正式结果由 RoleStatService 统一计算。
         public int Attack = 10;
         public int Defense = 5;

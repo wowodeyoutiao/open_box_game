@@ -94,6 +94,8 @@ namespace HotUpdateScripts.LocalNet
             RegisterFactory("/v1/store/list", StoreService.Instance.GetList);
             RegisterFactory("/v1/store/buy", StoreService.Instance.Buy);
             RegisterFactory("/v1/sign/list", (body) => ActivityService.Instance.GetSignList());
+            // 签到动作（原型是 PUT /v1/sign/add，本地按 URL 路由，不区分方法）
+            RegisterFactory("/v1/sign/add", (body) => ActivityService.Instance.SignOperate(body));
             RegisterFactory("/v1/activity/listall", (body) => ActivityService.Instance.GetActivityAll());
             RegisterFactory("/v1/activity/listcontinuity", (body) => ActivityService.Instance.GetActivityList());
             RegisterFactory("/v1/privilege/listcontinuity", (body) => ActivityService.Instance.GetPrivilegeList());

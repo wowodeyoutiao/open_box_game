@@ -42,6 +42,12 @@ namespace HotUpdateScripts.LocalNet
         public long TrialVoucher;
         public long Energy = 100;
 
+        // 签到进度（见 LocalRole.SignUserRound 的说明）
+        public int SignUserRound = 1;
+        public int SignRound = 1;
+        public int SignDay = 0;
+        public long SignLastUnix = 0;
+
         public int Attack = 10;
         public int Defense = 5;
         public int MaxHp = 100;
@@ -408,6 +414,10 @@ namespace HotUpdateScripts.LocalNet
                 Soul = role.Soul,
                 TrialVoucher = role.TrialVoucher,
                 Energy = role.Energy,
+                SignUserRound = role.SignUserRound,
+                SignRound = role.SignRound,
+                SignDay = role.SignDay,
+                SignLastUnix = role.SignLastUnix,
                 Attack = role.Attack,
                 Defense = role.Defense,
                 MaxHp = role.MaxHp,
@@ -763,6 +773,10 @@ namespace HotUpdateScripts.LocalNet
                 Soul = save.Soul,
                 TrialVoucher = save.TrialVoucher,
                 Energy = save.Energy,
+                SignUserRound = save.SignUserRound,
+                SignRound = save.SignRound,
+                SignDay = save.SignDay,
+                SignLastUnix = save.SignLastUnix,
                 Attack = save.Attack,
                 Defense = save.Defense,
                 MaxHp = save.MaxHp,

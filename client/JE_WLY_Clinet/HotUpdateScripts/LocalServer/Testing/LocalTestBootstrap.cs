@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using HotUpdateScripts.ProtoM;
 using JEngine.Core;
 using JEngine.LitJson;
 using JEngine.MyNet;
@@ -128,6 +129,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunGuardIsland());
                 if (scenario == "all" || scenario == "relic")
                     cases.Add(RunRelic());
+                if (scenario == "all" || scenario == "sign")
+                    cases.Add(RunSign());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3091,6 +3094,92 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 覆盖：首关推导 / 跳关拦截 / 打通 1701001（7 只怪）/ 进度推进 /
         ///       成功通关扣次数 / 星级评价入档 / 重打已通关关卡合法 / 次数耗尽拒绝。
         /// </summary>
+        /// <summary>
+        /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
+        /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
+        /// </summary>
+        private static CaseResult RunSign()
+        {
+            var result = new CaseResult("sign");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            int oldUserRound = role.SignUserRound;
+            int oldRound = role.SignRound;
+            int oldDay = role.SignDay;
+            long oldLastUnix = role.SignLastUnix;
+            long oldCoin = role.Coin;
+            int oldVip = role.Vip;
+            try
+            {
+                // 重置成一个「从没签过」的角色；VIP 归 0 走不翻倍分支
+                role.SignUserRound = 1;
+                role.SignRound = 1;
+                role.SignDay = 0;
+                role.SignLastUnix = 0;
+                role.Coin = 0;
+                role.Vip = 0;
+
+                // 1) 首次列表：第 1 天、未签
+                HTTP_SignListResponse list = ActivityService.Instance.GetSignList();
+                result.Check(list.code == 0 && list.data.day_award.day == 1
+                        && !list.data.day_award.sign && list.data.accumulate_award.Length == 0,
+                    "sign.list=" + list.code + "/" + list.data.day_award.day
+                        + "/" + list.data.day_award.sign + "/" + list.data.accumulate_award.Length);
+
+                // 2) 签到成功，状态推进到第 1 天
+                HTTP_SignOperateResponse op = ActivityService.Instance.SignOperate("");
+                result.Check(op.code == 0 && op.data, "sign.ok=" + op.code + "/" + op.data);
+                result.Check(role.SignDay == 1 && role.SignLastUnix > 0 && role.SignRound == 1,
+                    "sign.state=" + role.SignDay + "/" + role.SignRound + "/" + role.SignLastUnix);
+
+                // 3) 同一天重复签到被拒（原服 ErrGetAward）
+                HTTP_SignOperateResponse again = ActivityService.Instance.SignOperate("");
+                result.Check(again.code != 0 && !again.data, "sign.repeat=" + again.code + "/" + again.data);
+
+                // 4) 签到后列表：sign=true、day=1、累计列表含第 1 天
+                HTTP_SignListResponse after = ActivityService.Instance.GetSignList();
+                result.Check(after.data.day_award.sign && after.data.day_award.day == 1,
+                    "sign.after=" + after.data.day_award.day + "/" + after.data.day_award.sign);
+                result.Check(after.data.accumulate_award.Length == 1
+                        && after.data.accumulate_award[0].day == 1,
+                    "sign.acc=" + after.data.accumulate_award.Length);
+
+                // 5) 奖励到账（sign.json 第 1 轮第 1 天 = {id:1 金币, num:10000}，
+                //    VIP(0) < VIPLimit(1) 所以不翻倍）
+                result.Check(role.Coin == 10000, "sign.coin=" + role.Coin);
+
+                // 6) VIP 达到 VIPLimit 时奖励翻倍（原服 bei = 2）
+                role.SignDay = 0;
+                role.SignRound = 1;
+                role.SignUserRound = 1;
+                role.SignLastUnix = 0;
+                role.Coin = 0;
+                role.Vip = 1;
+                HTTP_SignOperateResponse vipOp = ActivityService.Instance.SignOperate("");
+                result.Check(vipOp.code == 0 && role.Coin == 20000,
+                    "sign.vipDouble=" + vipOp.code + "/" + role.Coin);
+            }
+            finally
+            {
+                role.SignUserRound = oldUserRound;
+                role.SignRound = oldRound;
+                role.SignDay = oldDay;
+                role.SignLastUnix = oldLastUnix;
+                role.Coin = oldCoin;
+                role.Vip = oldVip;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         private static CaseResult RunRelic()
         {
             var result = new CaseResult("relic");
