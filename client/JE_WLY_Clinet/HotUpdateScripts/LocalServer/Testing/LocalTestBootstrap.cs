@@ -1285,6 +1285,10 @@ namespace HotUpdateScripts.LocalNet.Testing
                 result.Check(skillCount == 0, "partner.skillsAtStar0=" + skillCount);
 
                 // 4) 上阵：槽位写入 + 战力不应下降
+                // ⚠️ role.TotalCombat 是**缓存值**：前面用例（battle 给经验、equip 换装）改了属性但
+                //    不一定重算过，直接拿它当基线会虚高 —— 表现为 "6623>=8139" 这种假红。
+                //    这里先各自重算再比较，比的是真实战力。
+                RoleStatService.Instance.RecalculateCurrent();
                 int combatBefore = role.TotalCombat;
                 CommonResponse combat = PartnerService.Instance.Combat(new PartnerCombatRequest
                 {
@@ -1295,6 +1299,7 @@ namespace HotUpdateScripts.LocalNet.Testing
                     "partner.combat=" + (combat == null ? -1 : combat.Code));
                 result.Check(FindSlotUid(role, 1) == partner.Uid,
                     "partner.slot1=" + FindSlotUid(role, 1));
+                RoleStatService.Instance.RecalculateCurrent();
                 result.Check(role.TotalCombat >= combatBefore,
                     "partner.combatPower=" + role.TotalCombat + ">=" + combatBefore);
 
