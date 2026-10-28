@@ -116,16 +116,17 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
             }
         }
 
+        // 【单机版不做聊天】Chat / ChatHistoryRequest 没有对端，整块屏蔽。
         GetView().btn_Chat.onClick.AddListener(() =>
         {
             AudioManager.Instance.PlaySound(AudioKey.Sound.Button);
-            UITool.Open<UIChat>();
+            UITool.ShowTips("暂未开放");
         });
 
         GetView().btn_Chat2.onClick.AddListener(() =>
         {
             AudioManager.Instance.PlaySound(AudioKey.Sound.Button);
-            UITool.Open<UIChat>();
+            UITool.ShowTips("暂未开放");
         });
 
         //团队穿戴
@@ -373,20 +374,8 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
 
     private void ShowFightEndButtonOpenStateInfo()
     {
-        if (GameUtil.Instance.CheckOpenServerIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.FightEnd, false))
-        {
-            SetLeftButtonDescription(LeftButton.FightEnd, $"{GameUtil.Instance.RemainingDaysUnlockOpen(CFG_XMLConfig.XML_Config.SwitchOpne.FightEnd)}天后开启");
-            return;
-        }
-        if (GameUtil.Instance.CheakCurTime(CFG_XMLConfig.xmlConfig.FightEnd.startTime, CFG_XMLConfig.xmlConfig.FightEnd.endTime, CFG_XMLConfig.xmlConfig.FightEnd.weekSet))
-        {
-            ShowFightEndTimeRemaining();
-        }
-        else
-        {
-            string fightEndOpenTime = $"{GameUtil.Instance.GetWeekDayName(CFG_XMLConfig.xmlConfig.FightEnd.weekSet)}开启";
-            SetLeftButtonDescription(LeftButton.FightEnd, fightEndOpenTime);
-        }
+        // 【单机版不做一战到底】1v1 异步 PVP，见 OnRightBtnClick 的说明。
+        SetLeftButtonDescription(LeftButton.FightEnd, "未开放");
     }
 
 
@@ -667,15 +656,10 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
         }
         else if (idx == 5)
         {
-            //if (GameUtil.Instance.CheckOpenServerIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.FightEnd))
-            //    return;
-            //if (!GameUtil.Instance.CheakCurTime(CFG_XMLConfig.xmlConfig.FightEnd.startTime, CFG_XMLConfig.xmlConfig.FightEnd.endTime, CFG_XMLConfig.xmlConfig.FightEnd.weekSet))
-            //{
-            //    UITool.ShowTips($"{GameUtil.Instance.GetWeekDayName(CFG_XMLConfig.xmlConfig.FightEnd.weekSet)}开启");
-            //    return;
-            //}
-            if (!GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.FightEnd))
-                UITool.Open<UIFightToTheEnd>();
+            // 【单机版不做一战到底】YZDD(19) 是 1v1 异步 PVP，
+            // 需要真实对手数据和 FightEndRank 排名，整块屏蔽。
+            UITool.ShowTips("暂未开放");
+            return;
         }
         else
         {
@@ -704,7 +688,9 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
                 UITool.Open<UITask>();
                 break;
             case 5:
-                UITool.Open<UIRank>();
+                // 【单机版不做排行榜】RankList/RankDetail/RankUserInfo 都是全服玩家数据，
+                // 单机没有可比对象，整块屏蔽。
+                UITool.ShowTips("暂未开放");
                 break;
             case 6:
                 //HttpC.GetSignList((_r) =>

@@ -458,18 +458,16 @@ public class UIFightChoice : UIBase<UIModelFightChoice, UIViewFightChoice>
                 break;
 
             case ChanllengeType.PvP:
-                OnPVPUI();
+                // 单机版不做乱斗之王（PVP 匹配/录像，需要真实对手）
+                UITool.ShowTips("暂未开放");
                 break;
             case ChanllengeType.WorldBoss:
                 // 单机版不做世界Boss（异步多人活动，全服共享 100 条血，单人无法成立）
                 UITool.ShowTips("暂未开放");
                 break;
             case ChanllengeType.FightEnd:
-                if (!GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.FightEnd))
-                {
-                    UITool.Open<UIFightToTheEnd>();
-                    UITool.Close<UIFightChoice>();
-                }
+                // 单机版不做一战到底（YZDD 1v1 异步 PVP）
+                UITool.ShowTips("暂未开放");
                 break;
             case ChanllengeType.DayDo:
 

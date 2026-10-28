@@ -72,8 +72,8 @@ public class UINoticeRun : UIBase<UIModelNoticeRun, UIViewNoticeRun>
 
                         break;
                     case "UIRank":
-                        UITool.Open<UIRank>();
-
+                        // 单机版不做排行榜
+                        UITool.ShowTips("暂未开放");
                         break;
                     default:
                         break;
@@ -102,7 +102,7 @@ public class UINoticeRun : UIBase<UIModelNoticeRun, UIViewNoticeRun>
         GetView().txt_Jump.gameObject.SetActive(CFG_Lamp.IsJump(runInfo.Id));
         if (CFG_Lamp.IsJump(runInfo.Id))
         {
-            GetView().txt_Jump.text = "����ǰ��!";
+            GetView().txt_Jump.text = "����ǰ��!";
         }
 
         GameHelper.Instance.SetDeayFrame(() =>

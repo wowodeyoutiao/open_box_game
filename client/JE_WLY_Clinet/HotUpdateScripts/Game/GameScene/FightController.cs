@@ -700,7 +700,8 @@ namespace HotUpdateScripts.Game
                     }
                     else if (GameRoomM.Instance.CFGRoom.Roomtype == CFG_Room.RoomType.Guild)
                     {
-                        UITool.Open<UIGuild>();
+                        // 单机版不做公会/公会战，进房已在服务端被拦，这里兜底
+                        UITool.ShowTips("暂未开放");
                         return;
                     }
                     else if (GameRoomM.Instance.CFGRoom.Roomtype == CFG_Room.RoomType.WorldBoss)
@@ -712,8 +713,8 @@ namespace HotUpdateScripts.Game
                     }
                     else if (GameRoomM.Instance.CFGRoom.Roomtype == CFG_Room.RoomType.YZDD)
                     {
-
-                        UITool.Open<UIFightToTheEnd>();
+                        // 单机版不做一战到底，兜底提示
+                        UITool.ShowTips("暂未开放");
                         return;
                     }
                     UITool.Open<UIFightChoice>(null, selectType, chanllengeType);

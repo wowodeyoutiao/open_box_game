@@ -119,11 +119,9 @@ public class UICom_DownBtns : UIBase<UIModelCom_DownBtns, UIViewCom_DownBtns>
                 UITool.Open<UIBag>();
                 break;
             case 6:
-                if (GameUtil.Instance.CheckOpenServerIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.Guild))
-                    return;
-                if (GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.Guild))
-                    return;
-                UITool.Open<UIGuild>();
+                // 【单机版不做公会】公会需要真实成员/捐献/公会战，
+                // 服务端 17 个 Guild* 协议全部没有单机实现，整块屏蔽。
+                UITool.ShowTips("暂未开放");
                 break;
             case 7:
                 if (GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.ExpPool))
