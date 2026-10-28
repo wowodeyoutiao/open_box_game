@@ -83,6 +83,7 @@ partner_equip 伙伴装备：穿脱 / 一键 / 按伙伴等级校验 / 下阵脱
 partner_gem  伙伴魂石镶嵌：槽位独立 / 槽位数按伙伴等级 / 拆卸回包
 partner_upgrade 伙伴装备强化升星：上限按伙伴等级 / 槽位进度存档
 partner_reset 伙伴合成 / 分解 / 洗练：碎片换整卡、按品质星级门槛重置并退料、免费 70% 与付费全额
+partner_master 伙伴装备四段套装：魂石自然加成 / 魂石大师 / 强化大师 / 升星大师
 skill      技能自动学习 / 槽位
 skill_action 技能升级 / 进阶 / 换槽
 skill_advance 技能进阶：档位配置 / 材料校验 / 伤害加成
@@ -136,6 +137,12 @@ all        全部场景
    「System.StackOverflowException at RuntimeStack.InitializeFrame」，看着像配置加载递归，
    实际是 CLRMethod.Invoke 处理异常时把栈耗尽 —— 别顺着栈溢出方向查。
    排查手法：在用例里插 Log.Print("[xx] stepN") 逐步打点。
+
+⑥ runner/*.ps1 不要用脚本批量改写
+   文件是「无 BOM UTF-8 + CRLF」。用 `io.open(p, encoding='utf-8')` 读再 `newline=''` 写，
+   universal newlines 会把 CRLF 统一成 LF；PowerShell 5.1 再按 ANSI 解码中文注释，
+   就会出现「字符串缺少终止符 / 表达式或语句中有意外的标记 }」这类看不懂的解析错误。
+   改 ps1 请用编辑工具逐行改，或显式 `newline='\r\n'` + `encoding='utf-8'` 写回。
 ```
 
 ## 正式包

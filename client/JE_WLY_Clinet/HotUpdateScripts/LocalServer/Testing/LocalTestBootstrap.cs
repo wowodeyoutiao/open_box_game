@@ -146,6 +146,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunPartnerUpgrade());
                 if (scenario == "all" || scenario == "partner_reset")
                     cases.Add(RunPartnerReset());
+                if (scenario == "all" || scenario == "partner_master")
+                    cases.Add(RunPartnerMaster());
                 if (scenario == "all" || scenario == "home_afk")
                     cases.Add(RunHomeAFKReset());
 
@@ -4795,6 +4797,216 @@ namespace HotUpdateScripts.LocalNet.Testing
                 result.Check(noPartner != null && noPartner.Code != 0
                     && noPartner.Error == "伙伴不存在",
                     "pr.disMissing=" + (noPartner == null ? "null" : noPartner.Error));
+            }
+            catch (System.Exception e)
+            {
+                result.Fail(e.ToString());
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.Partners = oldPartners;
+                role.PartnerSlots = oldSlots;
+                if (role.BagData != null && oldBag != null)
+                    role.BagData.ItemList = oldBag;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
+        /// <summary>取伙伴某项汇总属性（内部会重算整张属性表）。</summary>
+        private static int PartnerStatOf(PartnerInfo partner, pb.Attribute attr)
+        {
+            Dictionary<pb.Attribute, int> stats = PartnerService.Instance.BuildPartnerStats(partner);
+            if (stats == null)
+                return 0;
+            int v;
+            return stats.TryGetValue(attr, out v) ? v : 0;
+        }
+
+        /// <summary>发一件装备并穿到指定伙伴槽上，返回该装备实例 uid。</summary>
+        private static long GrantAndEquipToPartner(LocalRole role, int partnerSlotId, int cfgId)
+        {
+            ItemService.Instance.GrantReward(role, cfgId, 1);
+            long uid = 0;
+            for (int i = role.BagData.ItemList.Count - 1; i >= 0; i--)
+            {
+                ItemInfo bagItem = role.BagData.ItemList[i];
+                if (bagItem != null && bagItem.CfgId == cfgId)
+                {
+                    uid = bagItem.Uid;
+                    break;
+                }
+            }
+            if (uid <= 0)
+                return 0;
+            ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+            {
+                OpType = 1,
+                Slot = (EquipSlot)(cfgId - 100),   // 101..112 → EquipSlot 1..12
+                ItemUid = uid,
+                PartnerSlotId = partnerSlotId,
+            }));
+            return uid;
+        }
+
+        /// <summary>
+        /// 伙伴装备的「魂石自然加成 / 魂石大师 / 强化大师 / 升星大师」四段
+        /// （对齐原服 Partner.refreshStats 后半段，2026-10-28 补齐）。
+        ///
+        /// 数值来源：
+        ///   equipmaster.json 4001(Limit1) → key 23 = MOVE_SPEED_PERCENTAGE +500  ← 自然系 1
+        ///                    3003(Limit3) → 攻+6 / 魔攻+4 / 物防+4 / 魔防+4        ← 魂石大师
+        ///                    1010(Limit10) → 攻+10 / 魔攻+8 / 物防+6 / 魔防+6      ← 强化大师
+        ///                    2005(Limit5)  → 攻+10 / 魔攻+8 / 物防+6 / 魔防+6 + PVP/PVE +100 ← 升星大师
+        ///   config.xml  Diamond/master/stage 3003 需要 10 颗、第 10 高的魂石等级 >= 3
+        ///   10018「3级红魂石(风)」NatureMark=1 itemlevel=3 Phyatk=22 DiamondPosition=[1,5,6]
+        ///   → 只能镶部位 1(武器)/5(左戒指)/6(右戒指)，正好 3 件 × 4 槽 = 12 颗
+        /// </summary>
+        private static CaseResult RunPartnerMaster()
+        {
+            var result = new CaseResult("partner_master");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            List<PartnerInfo> oldPartners = role.Partners;
+            List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
+            try
+            {
+                BattleService.Instance.Exit();
+                role.Level = 80;
+                role.Partners = new List<PartnerInfo>();
+                role.PartnerSlots = new List<PartnerSlotInfo>();
+                PartnerService.Instance.EnsureSlots(role);
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+                role.BagData.ItemList = new List<ItemInfo>();
+
+                PartnerService.Instance.AddPartner(role, 1);
+                PartnerInfo partner = role.Partners[0];
+                partner.Level = 80;      // 魂石 4 槽要 60 级
+                partner.Star = 0;
+                PartnerService.Instance.Combat(
+                    new PartnerCombatRequest { SlotId = 1, PartnerUid = partner.Uid });
+                PartnerSlotInfo slot = role.FindPartnerSlot(1);
+
+                int atkBase = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+
+                // 1) 穿满 12 个部位（101..112 都是 Occ=1 战士装，伙伴 job=11）
+                for (int cfgId = 101; cfgId <= 112; cfgId++)
+                    GrantAndEquipToPartner(role, 1, cfgId);
+                int equipped = 0;
+                for (int s = 1; s < LocalRole.PartnerEquipSlotCount; s++)
+                {
+                    if (slot.Equips[s] != null && slot.Equips[s].Item != null)
+                        equipped++;
+                }
+                result.Check(equipped == 12, "pm.equipped=" + equipped);
+
+                int atkEquipped = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                result.Check(atkEquipped > atkBase,
+                    "pm.equipAtk=" + atkBase + "->" + atkEquipped);
+
+                // 2) 每件先镶 3 颗 3级风魂石 → 9 颗：不够 4 连、也不够魂石大师 10 颗
+                ItemService.Instance.GrantReward(role, 10018, 12);
+                int[] gemSlots = new int[] { 1, 5, 6 };
+                for (int g = 0; g < gemSlots.Length; g++)
+                {
+                    for (int gi = 0; gi < 3; gi++)
+                    {
+                        GemService.Instance.Change(new GemstoneChangeRequest
+                        {
+                            OpType = 1,
+                            Slot = (EquipSlot)gemSlots[g],
+                            GemstoneSlot = (GemstoneSlot)gi,
+                            ItemUid = 10018,
+                            PartnerSlotId = 1,
+                        });
+                    }
+                }
+                int atk9 = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                int move9 = PartnerStatOf(partner, pb.Attribute.MOVE_SPEED_PERCENTAGE);
+                // 9 颗 × 22 物攻，且此时既无自然加成也无魂石大师
+                result.Check(atk9 - atkEquipped == 9 * 22,
+                    "pm.gem9atk=" + (atk9 - atkEquipped));
+                result.Check(move9 == 0, "pm.gem9nature=" + move9);
+
+                // 3) 每件补第 4 颗 → 12 颗：3 部位同时 4 连 + 魂石大师激活
+                for (int g = 0; g < gemSlots.Length; g++)
+                {
+                    GemService.Instance.Change(new GemstoneChangeRequest
+                    {
+                        OpType = 1,
+                        Slot = (EquipSlot)gemSlots[g],
+                        GemstoneSlot = (GemstoneSlot)3,
+                        ItemUid = 10018,
+                        PartnerSlotId = 1,
+                    });
+                }
+                int atk12 = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                int move12 = PartnerStatOf(partner, pb.Attribute.MOVE_SPEED_PERCENTAGE);
+                // 多 3 颗魂石（3×22）+ 魂石大师 3003 的攻 +6
+                result.Check(atk12 - atk9 == 3 * 22 + 6,
+                    "pm.gemMaster=" + (atk12 - atk9));
+                // 3 件装备各触发一次自然加成（4001 → MOVE_SPEED_PERCENTAGE 500）
+                result.Check(move12 == 3 * 500, "pm.nature=" + move12);
+
+                // 3b) 拆掉一颗魂石 → 该部位 4 连被破坏，自然加成少一次。
+                //     ⚠️ 必须放在「摘掉装备」之前：GemService 会校验该部位有装备，否则报「该部位没有装备」。
+                GemService.Instance.Change(new GemstoneChangeRequest
+                {
+                    OpType = 2,
+                    Slot = (EquipSlot)1,
+                    GemstoneSlot = (GemstoneSlot)0,
+                    ItemUid = 10018,
+                    PartnerSlotId = 1,
+                });
+                int moveAfterRemove = PartnerStatOf(partner, pb.Attribute.MOVE_SPEED_PERCENTAGE);
+                result.Check(move12 - moveAfterRemove == 500,
+                    "pm.natureBreak=" + (move12 - moveAfterRemove));
+
+                // 4) 大师段要精确隔离：先把 12 个部位的**装备本体**从槽位摘掉。
+                //    槽位上的 Gemstone / Enhance / Stars 都还在（原服 changeEquip(2) 同样只清 ItemId），
+                //    这样装备属性与「槽位强化属性」都不再参与，剩下的增量只可能来自大师段。
+                for (int s = 1; s < LocalRole.PartnerEquipSlotCount; s++)
+                {
+                    if (slot.Equips[s] != null)
+                        slot.Equips[s].Item = null;
+                }
+                int atkNaked = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                result.Check(atkNaked < atk12, "pm.nakedAtk=" + atk12 + "->" + atkNaked);
+
+                // 5) 强化大师：全身最低强化等级拉到 10 → 1010 档（攻 +5）
+                for (int s = 1; s < LocalRole.PartnerEquipSlotCount; s++)
+                {
+                    if (slot.Equips[s] != null)
+                        slot.Equips[s].Enhance = 10;
+                }
+                int atkEnh = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                result.Check(atkEnh - atkNaked == 5, "pm.enhanceMaster=" + (atkEnh - atkNaked));
+
+                // 6) 升星大师：全身最低星级 5 → 2005 档（攻 +10）
+                for (int s = 1; s < LocalRole.PartnerEquipSlotCount; s++)
+                {
+                    if (slot.Equips[s] != null)
+                        slot.Equips[s].Stars = 5;
+                }
+                int atkStar = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                result.Check(atkStar - atkEnh == 10, "pm.starMaster=" + (atkStar - atkEnh));
+
+                // 7) 只拉低一个槽的强化等级，强化大师就该失效（原服「全身最低」语义）
+                slot.Equips[12].Enhance = 9;
+                int atkDrop = PartnerStatOf(partner, pb.Attribute.PHYSICAL_ATTACK);
+                result.Check(atkStar - atkDrop == 5,
+                    "pm.enhanceDropWhenLowest=" + (atkStar - atkDrop));
             }
             catch (System.Exception e)
             {

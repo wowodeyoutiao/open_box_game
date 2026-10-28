@@ -1276,11 +1276,14 @@ namespace HotUpdateScripts.LocalNet
         }
 
         /// <summary>
-        /// 伙伴装备属性，对齐原服 Partner.refreshStats 的装备段：
-        ///   攻/防/生命基础值 × **实例**品质系数；其余配置属性（命中/闪避/暴击/韧性/增伤/生命%）
-        ///   取原值；槽位强化（uuid = job%10*1000 + Enhance）与升星（job%10*100 + Stars）
-        ///   取配置里 slot 匹配的项；实例极品属性直接加。
-        /// 暂不含：宝石属性、宝石大师、强化大师、升星大师（后续 B 阶段补）。
+        /// 伙伴装备属性，对齐原服 Partner.refreshStats 的「装备 + 魂石 + 四段大师」：
+        ///   ① 装备：攻/防/生命基础值 × **实例**品质系数；其余配置属性（命中/闪避/暴击/韧性/增伤/生命%）
+        ///      取原值；槽位强化（uuid = job%10*1000 + Enhance）与升星（job%10*100 + Stars）
+        ///      取配置里 slot 匹配的项；实例极品属性直接加。
+        ///   ② 魂石：属性不乘品质系数；详见 AddPartnerGemstones。
+        ///   ③ 魂石大师：全身魂石等级降序，按 Diamond/master/stage 从高到低取第一个满足的档。
+        ///   ④ 强化 / 升星大师：取**全身最低**强化等级 / 星级，按 EquipMaster 同 Category
+        ///      且 Limit 达标的最高一档加成。
         /// </summary>
         private void AddPartnerEquipStats(Dictionary<Attribute, int> values, PartnerInfo partner)
         {
@@ -1296,10 +1299,32 @@ namespace HotUpdateScripts.LocalNet
             CFGItem_Partner partnerCfg = GetPartnerCfg(partner.CfgId);
             int partnerJob = partnerCfg == null ? 0 : PartnerToInt(partnerCfg.job) % 10;
 
-            for (int slot = 1; slot < LocalRole.PartnerEquipSlotCount && slot < slotInfo.Equips.Count; slot++)
+            // 魂石大师要看全身魂石等级；强化/升星大师要看全身**最低**强化等级/星级
+            var allGemLevels = new List<int>();
+            int minEnhance = int.MaxValue;
+            int minStars = int.MaxValue;
+
+            // ⚠️ 遍历全部 13 个槽位（0 号空置），不能只遍历有装备的：
+            //    强化/升星大师用的是「全身最低」，原服固定数组里空槽 Enhance/Stars 都是 0，
+            //    所以少穿一件或某件没强化，强化大师就不生效 —— 这是原服语义。
+            for (int slot = 1; slot < LocalRole.PartnerEquipSlotCount; slot++)
             {
-                SlotInfo equip = slotInfo.Equips[slot];
-                if (equip == null || equip.Item == null)
+                SlotInfo equip = slot < slotInfo.Equips.Count ? slotInfo.Equips[slot] : null;
+
+                int slotEnhance = equip == null ? 0 : equip.Enhance;
+                int slotStars = equip == null ? 0 : equip.Stars;
+                if (slotEnhance < minEnhance)
+                    minEnhance = slotEnhance;
+                if (slotStars < minStars)
+                    minStars = slotStars;
+
+                if (equip == null)
+                    continue;
+
+                // ── 魂石段：原服在「装备是否存在」判断之前，宝石属性不依赖装备基础值 ──
+                AddPartnerGemstones(values, equip, allGemLevels);
+
+                if (equip.Item == null)
                     continue;
 
                 CFGItem_Item cfg;
@@ -1375,35 +1400,124 @@ namespace HotUpdateScripts.LocalNet
                         AddValue(values, stat.attr, stat.Num);
                     }
                 }
+            }
 
-                // 魂石属性（原服 refreshStats 宝石段；自然加成/魂石大师留待后续）
-                if (equip.Gemstone != null)
+            if (minEnhance == int.MaxValue)
+                minEnhance = 0;
+            if (minStars == int.MaxValue)
+                minStars = 0;
+
+            // 魂石大师：与玩家侧共用同一套判定（RoleStatService.AddGemstoneMaster）
+            RoleStatService.AddGemstoneMaster(values, allGemLevels);
+            // 强化大师 / 升星大师：取全身最低强化等级、最低星级对应的最高达标档
+            AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.Reinforce, minEnhance);
+            AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.UpStar, minStars);
+        }
+
+        /// <summary>
+        /// 单件伙伴装备的魂石段：魂石属性 + 「同系四连」自然加成。
+        ///
+        /// 对齐原服 Partner.refreshStats 的宝石循环：
+        ///   - 魂石属性**不乘品质系数**（玩家侧同样如此），直接进总属性；
+        ///   - 同时把每颗魂石的 itemlevel 收进 allGemLevels，供魂石大师判定；
+        ///   - 4 个魂石槽的 NatureMark 全部相同 → EquipMaster(4000 + NatureMark) 的属性。
+        ///
+        /// ⚠️ 原服这段写成 `if err != nil { continue }`（连后面的装备属性一起跳过），
+        ///    是明显的笔误；这里只跳过自然加成本身。
+        /// </summary>
+        private static void AddPartnerGemstones(Dictionary<Attribute, int> values,
+            SlotInfo equip, List<int> allGemLevels)
+        {
+            if (values == null || equip == null || equip.Gemstone == null)
+                return;
+
+            var natures = new List<int>();
+            for (int g = 0; g < equip.Gemstone.Length && g < LocalRole.GemSlotCount; g++)
+            {
+                int gemId = equip.Gemstone[g];
+                if (gemId <= 0)
+                    continue;
+                CFGItem_Item gemCfg;
+                try { gemCfg = CFG_Item.GetById(gemId); }
+                catch { gemCfg = null; }
+                if (gemCfg == null)
+                    continue;
+
+                if (gemCfg.NatureMark > 0)
+                    natures.Add(gemCfg.NatureMark);
+                if (allGemLevels != null)
+                    allGemLevels.Add(PartnerToInt(gemCfg.itemlevel));
+
+                AddValue(values, Attribute.PHYSICAL_ATTACK, PartnerToInt(gemCfg.Phyatk));
+                AddValue(values, Attribute.MAGIC_ATTACK, PartnerToInt(gemCfg.Magatk));
+                AddValue(values, Attribute.PHYSICAL_DEFENSE, PartnerToInt(gemCfg.Phydef));
+                AddValue(values, Attribute.MAGIC_DEFENSE, PartnerToInt(gemCfg.Magdef));
+                AddValue(values, Attribute.MAX_HEALTH, PartnerToInt(gemCfg.HP));
+                AddValue(values, Attribute.HIT, PartnerToInt(gemCfg.Hit));
+                AddValue(values, Attribute.DODGE, PartnerToInt(gemCfg.Miss));
+                AddValue(values, Attribute.CRITICAL_STRIKE, PartnerToInt(gemCfg.Crit));
+                AddValue(values, Attribute.TOUGHNESS, PartnerToInt(gemCfg.Decrit));
+                AddValue(values, Attribute.PVP_DAMAGE_PERCENTAGE, PartnerToInt(gemCfg.PVPdamage));
+                AddValue(values, Attribute.PVE_DAMAGE_PERCENTAGE, PartnerToInt(gemCfg.PVEdamage));
+                AddValue(values, Attribute.HEALTH_PERCENTAGE, PartnerToInt(gemCfg.HPPercent));
+            }
+
+            // 魂石自然加成：同一件装备 4 个魂石槽全是同一种自然系才生效
+            if (natures.Count == LocalRole.GemSlotCount
+                && natures[0] == natures[1]
+                && natures[1] == natures[2]
+                && natures[2] == natures[3])
+            {
+                CFGItem_EquipMaster natureCfg;
+                try { natureCfg = CFG_EquipMaster.GetById(RoleStatService.GemStoneNatureMasterBase + natures[0]); }
+                catch { natureCfg = null; }
+                if (natureCfg != null && natureCfg.Attribute != null)
                 {
-                    for (int g = 0; g < equip.Gemstone.Length && g < LocalRole.GemSlotCount; g++)
+                    for (int a = 0; a < natureCfg.Attribute.Length; a++)
                     {
-                        int gemId = equip.Gemstone[g];
-                        if (gemId <= 0)
-                            continue;
-                        CFGItem_Item gemCfg;
-                        try { gemCfg = CFG_Item.GetById(gemId); }
-                        catch { gemCfg = null; }
-                        if (gemCfg == null)
-                            continue;
-
-                        AddValue(values, Attribute.PHYSICAL_ATTACK, PartnerToInt(gemCfg.Phyatk));
-                        AddValue(values, Attribute.MAGIC_ATTACK, PartnerToInt(gemCfg.Magatk));
-                        AddValue(values, Attribute.PHYSICAL_DEFENSE, PartnerToInt(gemCfg.Phydef));
-                        AddValue(values, Attribute.MAGIC_DEFENSE, PartnerToInt(gemCfg.Magdef));
-                        AddValue(values, Attribute.MAX_HEALTH, PartnerToInt(gemCfg.HP));
-                        AddValue(values, Attribute.HIT, PartnerToInt(gemCfg.Hit));
-                        AddValue(values, Attribute.DODGE, PartnerToInt(gemCfg.Miss));
-                        AddValue(values, Attribute.CRITICAL_STRIKE, PartnerToInt(gemCfg.Crit));
-                        AddValue(values, Attribute.TOUGHNESS, PartnerToInt(gemCfg.Decrit));
-                        AddValue(values, Attribute.PVP_DAMAGE_PERCENTAGE, PartnerToInt(gemCfg.PVPdamage));
-                        AddValue(values, Attribute.PVE_DAMAGE_PERCENTAGE, PartnerToInt(gemCfg.PVEdamage));
-                        AddValue(values, Attribute.HEALTH_PERCENTAGE, PartnerToInt(gemCfg.HPPercent));
+                        // struct 数组元素先拷局部变量再读字段（ILRuntime）
+                        CFGItem_EquipMaster.AttributeItem attr = natureCfg.Attribute[a];
+                        AddValue(values, (Attribute)attr.key, attr.value);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// 强化大师 / 升星大师：在 EquipMaster 里筛出同 Category 且 Limit &lt;= achieved 的
+        /// **最高一档**（Limit 最大者），把它的属性加上。
+        ///
+        /// 原服用「遍历时不断覆盖 enhanceCfg」，而配置按 UUID/Limit 升序排列，
+        /// 等价于取最后一个满足条件的档位 —— 也就是这里取 Limit 最大的那个。
+        /// </summary>
+        private static void AddEquipMasterByLimit(Dictionary<Attribute, int> values,
+            CFG_EquipMaster.CategoryClass category, int achieved)
+        {
+            if (values == null || achieved <= 0)
+                return;
+
+            List<CFGItem_EquipMaster> masters;
+            try { masters = CFG_EquipMaster.GetMastersByCatedory(category); }
+            catch { masters = null; }
+            if (masters == null || masters.Count == 0)
+                return;
+
+            CFGItem_EquipMaster best = null;
+            for (int i = 0; i < masters.Count; i++)
+            {
+                CFGItem_EquipMaster cfg = masters[i];
+                if (cfg == null || cfg.Limit > achieved)
+                    continue;
+                if (best == null || cfg.Limit > best.Limit)
+                    best = cfg;
+            }
+            if (best == null || best.Attribute == null)
+                return;
+
+            for (int a = 0; a < best.Attribute.Length; a++)
+            {
+                CFGItem_EquipMaster.AttributeItem attr = best.Attribute[a];
+                AddValue(values, (Attribute)attr.key, attr.value);
             }
         }
 

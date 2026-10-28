@@ -404,7 +404,7 @@ namespace HotUpdateScripts.LocalNet
         }
 
         /// <summary>魂石自然加成配置的 ID 前缀（原服 EquipMasterCategoryGemStoneNature * 1000）。</summary>
-        private const int GemStoneNatureMasterBase = 4000;
+        public const int GemStoneNatureMasterBase = 4000;
 
         /// <summary>
         /// 魂石属性，对齐原服 refreshStats 的宝石段：
@@ -516,8 +516,11 @@ namespace HotUpdateScripts.LocalNet
         /// 魂石大师：把全身所有魂石的等级降序排好，按 config.xml 的
         /// Diamond/master/stage（num 从大到小）逐档判定：
         ///   魂石总数 >= num 且 第 num 高的魂石等级 >= 该档 Limit → 激活并 break。
+        ///
+        /// 玩家和伙伴共用同一套判定（伙伴走 PartnerSlot.Equips[i].Gemstone），
+        /// 所以这里放开成 public。
         /// </summary>
-        private static void AddGemstoneMaster(Dictionary<Attribute, int> values, List<int> allGems)
+        public static void AddGemstoneMaster(Dictionary<Attribute, int> values, List<int> allGems)
         {
             if (allGems == null || allGems.Count == 0)
                 return;
