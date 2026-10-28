@@ -95,7 +95,20 @@ namespace HotUpdateScripts.LocalNet
             AddInitialSpeed(role.Job, values);
             AddEquipment(role, values);
             AddCriticalDamage(values);
-            // 上阵伙伴的属性（原服 refreshStats 会遍历 partnerSlots 累加）
+            // ⚠️ 过渡态：这里仍然把上阵伙伴的属性并入玩家。
+            //
+            //    原服 Player.refreshStats 里 p.stats 是**不含**伙伴属性的：伙伴走自己的
+            //    Partner.refreshStats（partner.go:150），结果通过 packet.Partners 单独下发，
+            //    只有 TotalCombat 才相加（player.go:924-931）。
+            //
+            //    但本地战斗里伙伴单位还没参战（BattleService.Tick 只处理 monster，
+            //    怪物索敌也只朝 runtime.Player），伙伴是"站着不动的模型"。
+            //    之前正是靠「属性并入玩家」变相实现了伙伴的战斗力贡献。
+            //
+            //    所以在补完「伙伴战斗 AI（索敌/移动/攻击/承伤）」之前，
+            //    拆开会让玩家直接变弱、关卡打不过（实测 boss/tower 玩家被打死）。
+            //    详见 doc 62.7。伙伴最终属性与战力已由
+            //    BuildPartnerStatsFinal / GetPartnerCombat 提供，AI 就绪后删掉这行即可。
             PartnerService.Instance.AddPartnerStats(values);
             // 战宠属性（原服 refreshStats 里 petStatus / newpetStatus 那两段）。
             // 位置很关键：原服是先加宠物、再算魂石的生命百分比尾数，
@@ -132,9 +145,72 @@ namespace HotUpdateScripts.LocalNet
             role.Defense = Get(values, defenseAttr);
             role.MaxHp = maxHealth;
             role.CurHp = currentHealth;
+            // 过渡态：伙伴属性已并入 values（见上面的说明），所以战力在合并口径下算一次。
+            // 补完伙伴战斗 AI 后改成：combat（玩家自身） + SumPartnerCombat(role)。
             role.TotalCombat = combat;
 
             return new RoleStatSnapshot(values, combat);
+        }
+
+        /// <summary>
+        /// 伙伴的**最终**属性表 = 伙伴自身各段 + 末尾百分比放大。
+        ///
+        /// 对齐原服 partner.stats：`Partner.refreshStats` 也走和玩家同构的一整套
+        /// （基础/星级/Born/装备/魂石/大师），最后在 partner.go:437 做
+        /// `par.stats.setStats(ATK, par.GetDC() * pct / BaseRate)` 的百分比放大。
+        ///
+        /// 与 `PartnerService.BuildPartnerStats` 的区别：那个只汇总各段、**不做**百分比放大，
+        /// 用于「逐段差值」类断言；战斗单位、面板下发、战力都必须用这个最终版。
+        /// </summary>
+        public static Dictionary<Attribute, int> BuildPartnerStatsFinal(PartnerInfo partner)
+        {
+            var values = new Dictionary<Attribute, int>();
+            if (partner == null)
+                return values;
+
+            Dictionary<Attribute, int> raw = PartnerService.Instance.BuildPartnerStats(partner);
+            if (raw != null)
+            {
+                foreach (KeyValuePair<Attribute, int> kv in raw)
+                    values[kv.Key] = kv.Value;
+            }
+
+            ApplyPercentages(values);
+
+            int maxHealth = Get(values, Attribute.MAX_HEALTH);
+            if (maxHealth < 1)
+                maxHealth = 1;
+            Set(values, Attribute.MAX_HEALTH, maxHealth);
+            Set(values, Attribute.HEALTH, maxHealth);
+            return values;
+        }
+
+        /// <summary>
+        /// 伙伴战力：用**伙伴自己的职业** + 自己的最终属性算。
+        /// 对应原服 `partner.refreshStats` 里的 `par.calcCombatReal(&combatStats)`。
+        /// </summary>
+        public static int GetPartnerCombat(PartnerInfo partner)
+        {
+            if (partner == null)
+                return 0;
+            int job = PartnerService.GetPartnerJob(partner.CfgId);
+            return CalculateCombat(job, BuildPartnerStatsFinal(partner));
+        }
+
+        /// <summary>
+        /// 上阵伙伴战力之和。对应原服 `packet.TotalCombat += v.Combat`（player.go:929-931）。
+        /// </summary>
+        public static int SumPartnerCombat(LocalRole role)
+        {
+            if (role == null)
+                return 0;
+            List<PartnerInfo> partners = PartnerService.Instance.GetBattlePartners(role);
+            if (partners == null)
+                return 0;
+            int sum = 0;
+            for (int i = 0; i < partners.Count; i++)
+                sum += GetPartnerCombat(partners[i]);
+            return sum;
         }
 
         private static void AddRoleBase(LocalRole role, Dictionary<Attribute, int> values)
@@ -807,7 +883,7 @@ namespace HotUpdateScripts.LocalNet
             Set(values, baseAttr, value > 0 ? value : 0);
         }
 
-        private static int CalculateCombat(int job, Dictionary<Attribute, int> values)
+        public static int CalculateCombat(int job, Dictionary<Attribute, int> values)
         {
             int maxHp = Get(values, Attribute.MAX_HEALTH);
             int pDef = Get(values, Attribute.PHYSICAL_DEFENSE);
@@ -861,7 +937,11 @@ namespace HotUpdateScripts.LocalNet
         private static Attribute GetAttackAttribute(int job)
         {
             // 与服务端一致：战士物理，法师/祭祀魔法。
-            return job == 1 ? Attribute.PHYSICAL_ATTACK : Attribute.MAGIC_ATTACK;
+            // ⚠️ 玩家 job 是 1/2/3，伙伴 job 是 11/12/13（partner.json 的 job 列），
+            //    两者都要能吃，所以按个位判断。否则伙伴（11）会被当成"非战士"去读魔法攻击，
+            //    战士伙伴的攻击恒为 0、战力不随装备变化。
+            int baseJob = job % 10;
+            return baseJob == 1 ? Attribute.PHYSICAL_ATTACK : Attribute.MAGIC_ATTACK;
         }
 
         /// <summary>

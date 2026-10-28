@@ -272,14 +272,63 @@ namespace HotUpdateScripts.LocalNet
             if (snapshot == null)
                 return;
 
+            LocalRole role = LocalData.Instance.Current;
             var push = new SyncUserStatsPush
             {
+                // 过渡态：玩家属性仍含伙伴属性（伙伴还没真正参战），所以两个战力都取合并口径。
+                // 补完伙伴战斗 AI 后改成 Combat=snapshot.Combat / TotalCombat=role.TotalCombat。
                 Combat = snapshot.Combat,
                 TotalCombat = snapshot.Combat,
             };
             push.Attributes.AddRange(snapshot.ToStatsList());
 
+            // 伙伴属性单独一段下发（原服 packet.Partners）。
+            // 客户端 PartnerM.GetOnePartnerStats 依赖它显示伙伴战力与四维，
+            // 之前一直没填 → 伙伴面板永远是空的。
+            FillPartnerStats(push, role);
+
             JEvent.defaultEvent.Post(push);
+        }
+
+        /// <summary>
+        /// 填充 SyncUserStatsPush.Partners：每个**上阵**伙伴一条
+        /// （Combat + 最终属性 + PartnerUid），对齐原服 partner.refreshStats 结尾的
+        /// `packet.Partners = append(packet.Partners, ps)`。
+        /// </summary>
+        private static void FillPartnerStats(SyncUserStatsPush push, LocalRole role)
+        {
+            if (push == null || role == null)
+                return;
+
+            List<PartnerInfo> partners = PartnerService.Instance.GetBattlePartners(role);
+            if (partners == null)
+                return;
+
+            int maxAttr = (int)Attribute.MAX_Attribute;
+            for (int i = 0; i < partners.Count; i++)
+            {
+                PartnerInfo partner = partners[i];
+                if (partner == null)
+                    continue;
+
+                Dictionary<Attribute, int> stats = RoleStatService.BuildPartnerStatsFinal(partner);
+                var ps = new SyncUserStatsPush.PartnerStats
+                {
+                    PartnerUid = partner.Uid,
+                    Combat = RoleStatService.GetPartnerCombat(partner),
+                };
+
+                // 按 Attribute 升序、过滤 <=0，与玩家属性列表保持同样的输出形态
+                for (int a = 1; a < maxAttr; a++)
+                {
+                    Attribute attribute = (Attribute)a;
+                    int value;
+                    if (!stats.TryGetValue(attribute, out value) || value <= 0)
+                        continue;
+                    ps.Attributes.Add(new Stats { attr = attribute, Num = value });
+                }
+                push.Partners.Add(ps);
+            }
         }
 
         /// <summary>

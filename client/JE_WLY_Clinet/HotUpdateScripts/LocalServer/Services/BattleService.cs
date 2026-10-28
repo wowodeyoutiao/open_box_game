@@ -1723,7 +1723,9 @@ namespace HotUpdateScripts.LocalNet
                 if (cfg == null)
                     continue;
 
-                Dictionary<Attribute, int> stats = PartnerService.Instance.BuildPartnerStats(info);
+                // 伙伴是独立战斗单位，属性用**伙伴自己的最终属性表**
+                // （含百分比放大）。原服 getScenePartner 里 MaxHp 取 partner.GetMaxHP()。
+                Dictionary<Attribute, int> stats = RoleStatService.BuildPartnerStatsFinal(info);
                 int maxHp = GetStatValue(stats, Attribute.MAX_HEALTH);
                 if (maxHp <= 0)
                     maxHp = 100;
