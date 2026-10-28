@@ -1141,6 +1141,26 @@ namespace HotUpdateScripts.LocalNet.Testing
                     "battle.partnerDamage=" + hpBeforePartner
                         + "->" + BattleService.Instance.MonsterHpTotal);
 
+                // 伙伴承伤：伙伴先打了怪 → 怪物仇恨应转向伙伴（原服 `o.target = attacker`）。
+                // 用「本场是否曾转向」判断，不用瞬态采样 —— 怪物追伙伴超 Chase 会脱战清 target。
+                List<PartnerInfo> battlePartners = PartnerService.Instance.GetBattlePartners(snapshot.Role);
+                long tankUid = battlePartners.Count > 0 ? battlePartners[0].Uid : 0;
+                result.Check(BattleService.Instance.PartnerAggroedInBattle,
+                    "battle.aggroOnPartner=" + BattleService.Instance.PartnerAggroedInBattle
+                        + "/" + tankUid);
+
+                int partnerHpBeforeTank = BattleService.Instance.PartnerHpTotal;
+                int playerHpBeforeTank = BattleService.Instance.PlayerHpInBattle;
+                // 再推进 2 秒，让怪物把仇恨目标打几下
+                for (int i = 121; i <= 160; i++)
+                    BattleService.Instance.Tick(partnerTickBase + 50L * i);
+                // 伙伴是远程的话怪物可能贴不上来，所以只断言「没打玩家」
+                result.Check(BattleService.Instance.PlayerHpInBattle == playerHpBeforeTank,
+                    "battle.playerSafe=" + playerHpBeforeTank
+                        + "->" + BattleService.Instance.PlayerHpInBattle
+                        + "/partnerHp" + partnerHpBeforeTank
+                        + "->" + BattleService.Instance.PartnerHpTotal);
+
                 for (int i = 0; i < enter.TableInfo.MonsterList.Count; i++)
                 {
                     long uid = enter.TableInfo.MonsterList[i].Uid;

@@ -275,8 +275,7 @@ namespace HotUpdateScripts.LocalNet
             LocalRole role = LocalData.Instance.Current;
             var push = new SyncUserStatsPush
             {
-                // 过渡态：玩家属性仍含伙伴属性（伙伴还没真正参战），所以两个战力都取合并口径。
-                // 补完伙伴战斗 AI 后改成 Combat=snapshot.Combat / TotalCombat=role.TotalCombat。
+                // 过渡态：玩家属性仍含伙伴属性，两个战力都取合并口径（见 doc 63 节）。
                 Combat = snapshot.Combat,
                 TotalCombat = snapshot.Combat,
             };

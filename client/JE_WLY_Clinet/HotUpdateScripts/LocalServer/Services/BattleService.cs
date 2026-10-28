@@ -121,6 +121,13 @@ namespace HotUpdateScripts.LocalNet
             /// 没被打过就不会主动追玩家。
             /// </summary>
             public bool HasTarget;
+            /// <summary>
+            /// 当前仇恨目标（玩家或伙伴）。对齐原服 `MapObject.target`：
+            /// 首次被打时锁定攻击者，之后只追这一个；目标死亡则失效回退。
+            /// ⚠️ 之前只有 HasTarget 布尔、攻击目标硬编码 runtime.Player，
+            ///    导致伙伴打了怪也不会被怪打（伙伴不承伤）。
+            /// </summary>
+            public BattleUnit Target;
             public Direction Direction = Direction.DOWN;
             public bool Dead;
             /// <summary>
@@ -208,6 +215,8 @@ namespace HotUpdateScripts.LocalNet
             public List<PendingHit> PendingHits = new List<PendingHit>();
             /// <summary>伙伴进场推送是否已发过（要等客户端进战斗场景后补推，否则会被丢掉）。</summary>
             public bool PartnersPushed;
+            /// <summary>测试用：本场战斗是否出现过「怪物仇恨转向伙伴」。</summary>
+            public bool PartnerAggroed;
             public long AllDeadAtMs;
             public long PlayerDeadAtMs;
             /// <summary>
@@ -588,6 +597,62 @@ namespace HotUpdateScripts.LocalNet
                     BattleUnit m = _runtime.Monsters[i];
                     if (m != null)
                         total += m.Hp;
+                }
+                return total;
+            }
+        }
+
+        /// <summary>
+        /// 只读：首个"有仇恨目标"的存活怪物当前锁定的目标 Uid，测试用。
+        /// 用来验证伙伴打了怪之后，怪物仇恨是否转向伙伴（原服 `o.target = attacker`）。
+        /// </summary>
+        public long FirstAggroMonsterTargetUid
+        {
+            get
+            {
+                if (_runtime == null)
+                    return 0;
+                for (int i = 0; i < _runtime.Monsters.Count; i++)
+                {
+                    BattleUnit m = _runtime.Monsters[i];
+                    if (m != null && !m.Dead && m.HasTarget && m.Target != null)
+                        return m.Target.Uid;
+                }
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// 只读：本场战斗是否出现过「怪物仇恨转向伙伴」，测试用。
+        /// 比瞬态采样可靠 —— 怪物追伙伴超出 Chase 会脱战并清空 target。
+        /// </summary>
+        public bool PartnerAggroedInBattle
+        {
+            get { return _runtime != null && _runtime.PartnerAggroed; }
+        }
+
+        /// <summary>只读：战斗内玩家单位当前血量，测试用（验证伙伴承伤时玩家没掉血）。</summary>
+        public int PlayerHpInBattle
+        {
+            get { return _runtime == null || _runtime.Player == null ? 0 : _runtime.Player.Hp; }
+        }
+
+        /// <summary>
+        /// 只读：伙伴单位总血量，测试用（判断伙伴是否会承伤）。
+        /// 原服怪物首次被打时 `o.target = attacker`，伙伴打了怪就会被怪打。
+        /// </summary>
+        public int PartnerHpTotal
+        {
+            get
+            {
+                if (_runtime == null)
+                    return 0;
+                int total = 0;
+                for (int i = 0; i < _runtime.Partners.Count; i++)
+                {
+                    BattleUnit p = _runtime.Partners[i];
+                    if (p != null)
+                        total += p.Hp;
                 }
                 return total;
             }
@@ -1421,13 +1486,10 @@ namespace HotUpdateScripts.LocalNet
                     if (monster == null || monster.Dead)
                         continue;
 
-                    double dx = runtime.Player.X - monster.X;
-                    double dy = runtime.Player.Y - monster.Y;
-                    double distance = Math.Sqrt(dx * dx + dy * dy);
-
-                    // 原服怪物是被动仇恨：MapObject.Attacked 里才 `o.target = attacker`，
-                    // 没被玩家打过就不主动追人，原地待机 / 走回出生点。
-                    if (!monster.HasTarget)
+                    // 原服是被动仇恨：没被打过就不主动追人，原地待机 / 走回出生点。
+                    // 被打过之后只追**锁定目标**（可能是玩家，也可能是伙伴）。
+                    BattleUnit aggro = GetMonsterAggroTarget(runtime, monster);
+                    if (aggro == null)
                     {
                         if (Math.Abs(monster.X - monster.BornX) > 0.1
                             || Math.Abs(monster.Y - monster.BornY) > 0.1)
@@ -1438,6 +1500,10 @@ namespace HotUpdateScripts.LocalNet
                         continue;
                     }
 
+                    double dx = aggro.X - monster.X;
+                    double dy = aggro.Y - monster.Y;
+                    double distance = Math.Sqrt(dx * dx + dy * dy);
+
                     // 原服 processTarget：离出生点超过 Chase 就脱战回位。
                     double awayX = monster.X - monster.BornX;
                     double awayY = monster.Y - monster.BornY;
@@ -1445,14 +1511,15 @@ namespace HotUpdateScripts.LocalNet
                         && Math.Sqrt(awayX * awayX + awayY * awayY) > monster.ChaseRange)
                     {
                         monster.HasTarget = false;
+                        monster.Target = null;
                         continue;
                     }
 
                     if (distance > monster.AttackRange)
                     {
                         // 原服 Monst.processAI：先索敌/追击，进入攻击距离才攻击。
-                        // 停在 AttackRange × 0.8 处，避免贴进玩家身体。
-                        StepMonsterTowards(monster, runtime.Player.X, runtime.Player.Y,
+                        // 停在 AttackRange × 0.8 处，避免贴进目标身体。
+                        StepMonsterTowards(monster, aggro.X, aggro.Y,
                             monster.AttackRange * 0.8, dtMs, runtime, nowMs);
                         // 原服 monster_move 每移动一格 Broadcast(RouteMovePush)；
                         // 不推的话客户端怪物会停在出生点，表现为远处隔空攻击。
@@ -1461,7 +1528,7 @@ namespace HotUpdateScripts.LocalNet
                     else if (nowMs >= monster.NextAttackMs)
                     {
                         PushMonsterMoveIfNeeded(monster, nowMs, true);
-                        CastMonsterAttack(runtime, monster, nowMs);
+                        CastMonsterAttack(runtime, monster, aggro, nowMs);
                         monster.NextAttackMs = nowMs + Math.Max(100, monster.AttackIntervalMs);
                     }
                 }
@@ -1809,6 +1876,34 @@ namespace HotUpdateScripts.LocalNet
         /// 伙伴 AI，对齐原服 Partner.processAI 的最小集：
         /// 索敌（优先跟主人打同一个目标）→ 追击 → 攻击；无目标时跟随主人。
         /// </summary>
+        /// <summary>
+        /// 怪物当前仇恨目标。对齐原服 `MapObject.target`：
+        ///   · 首次被玩家/伙伴打中时锁定攻击者（见 ApplyHit）；
+        ///   · 目标死亡或被清空 → 回退到玩家（玩家也死则无目标、回位待机）。
+        ///
+        /// ⚠️ 原服 `CanAttackTarget` 对已死目标返回 false，怪物会对着尸体空转；
+        ///    这里做了个更合理的小改动：目标死后直接回退玩家，避免卡死。
+        /// </summary>
+        private static BattleUnit GetMonsterAggroTarget(BattleRuntime runtime, BattleUnit monster)
+        {
+            if (runtime == null || monster == null)
+                return null;
+            if (!monster.HasTarget && monster.Target == null)
+                return null;
+
+            BattleUnit target = monster.Target;
+            if (target != null && !target.Dead)
+                return target;
+
+            // 锁定的目标已死/丢失：回退到还活着的玩家
+            if (!runtime.Player.Dead)
+            {
+                monster.Target = runtime.Player;
+                return runtime.Player;
+            }
+            return null;
+        }
+
         private void UpdatePartners(BattleRuntime runtime, long dtMs, long nowMs)
         {
             if (runtime == null || runtime.Partners.Count == 0)
@@ -2323,24 +2418,24 @@ namespace HotUpdateScripts.LocalNet
         /// 怪物攻击：原服 MonsterInfo.attack 里同样是先广播 AttackPush，
         /// 再 `time.AfterFunc(skillCfg.DelayTime)` 把伤害丢进 chDelayAttack。
         /// </summary>
-        private void CastMonsterAttack(BattleRuntime runtime, BattleUnit monster, long nowMs)
+        private void CastMonsterAttack(BattleRuntime runtime, BattleUnit monster, BattleUnit target, long nowMs)
         {
-            if (runtime == null || monster == null || runtime.Player.Dead)
+            if (runtime == null || monster == null || target == null || target.Dead)
                 return;
 
             int skillId = monster.AttackSkillId;
             CFGItem_Skill skillCfg = GetSkillCfg(skillId);
 
             Direction facing = DirectionFromPoint(monster.X, monster.Y,
-                runtime.Player.X, runtime.Player.Y);
+                target.X, target.Y);
             monster.Direction = facing;
 
             LocalPusher.Instance.PushBattleAttackNow(new AttackPush
             {
                 AttackerId = monster.Uid,
                 SkillId = skillId,
-                TargetUids = new long[] { runtime.Player.Uid },
-                Location = new Point { X = runtime.Player.X, Y = runtime.Player.Y },
+                TargetUids = new long[] { target.Uid },
+                Location = new Point { X = target.X, Y = target.Y },
                 Direction = facing,
             });
 
@@ -2351,7 +2446,7 @@ namespace HotUpdateScripts.LocalNet
             {
                 AtMs = nowMs + delayMs,
                 Attacker = monster,
-                Target = runtime.Player,
+                Target = target,
                 SkillId = skillId,
             });
         }
@@ -2399,8 +2494,17 @@ namespace HotUpdateScripts.LocalNet
 
             // 原服 MapObject.Attacked：怪物被打后 target 才会设成攻击者。
             // 伙伴打怪也算（原服伙伴延迟攻击走的是同一套 Attacked）。
+            // `o.target == nil` 才设 —— 首击锁定，之后不再改（除非目标死亡）。
             if (!target.IsPlayer && (attacker.IsPlayer || attacker.IsPartner))
+            {
                 target.HasTarget = true;
+                if (target.Target == null || target.Target.Dead)
+                    target.Target = attacker;
+                // 测试用：记录「仇恨是否曾转向伙伴」。
+                // 不能靠瞬态采样 —— 怪物追伙伴时可能超出 Chase 脱战并清空 target。
+                if (attacker.IsPartner)
+                    runtime.PartnerAggroed = true;
+            }
 
             // 命中-闪避
             int hitRate = attacker.Hit;
@@ -2850,6 +2954,7 @@ namespace HotUpdateScripts.LocalNet
                 monster.PushedX = Math.Floor(monster.X);
                 monster.PushedY = Math.Floor(monster.Y);
                 monster.HasTarget = false;
+                monster.Target = null;
                 monster.NextAttackMs = nowMs + monster.AttackIntervalMs;
                 monster.Uid = runtime.NextMonsterUid++;
 
