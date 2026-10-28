@@ -136,6 +136,13 @@ namespace HotUpdateScripts.LocalNet
             }
             EnsureSlots(role);
 
+            // 原服 Manager.PartnerCombat：p.desk != nil → IllegalInBattle
+            if (BattleService.Instance.InBattle)
+            {
+                resp.Error = "战斗中不能更换伙伴";
+                return resp;
+            }
+
             if (req == null)
             {
                 resp.Error = "上阵请求为空";
@@ -209,6 +216,12 @@ namespace HotUpdateScripts.LocalNet
             }
             EnsureSlots(role);
 
+            if (BattleService.Instance.InBattle)
+            {
+                resp.Error = "战斗中不能更换伙伴";
+                return resp;
+            }
+
             if (req == null)
             {
                 resp.Error = "下阵请求为空";
@@ -222,10 +235,95 @@ namespace HotUpdateScripts.LocalNet
                 return resp;
             }
 
+            PartnerInfo partner = FindPartner(role, slot.PartnerUid);
+            string error;
+            // 原服 partnerRest：先校验装备背包够不够，再逐件脱下，最后清技能槽
+            if (!TakeOffAllEquips(role, slot, out error))
+            {
+                resp.Error = error;
+                return resp;
+            }
+            ClearPartnerSkillSlots(role, partner);
+
             slot.PartnerUid = 0;
             Refresh(role);
+            LocalPusher.Instance.PushPartnerSlot();
+            LocalPusher.Instance.PushBagInfoNow();
             resp.Code = 0;
             return resp;
+        }
+
+        /// <summary>
+        /// 把伙伴身上的装备全部脱回背包（原服 partnerRest / PartnerReplace 的下阵前置处理）。
+        /// ⚠️ 不脱的话：槽位清空后装备既不在背包也不在身上，还会被 IsEquipped 拦住分解 —— **永久丢失**。
+        /// 槽位的强化/升星/宝石保留（原服 changeEquip(2) 只把 ItemId 置 0）。
+        /// 校验失败时不修改任何数据。
+        /// </summary>
+        private static bool TakeOffAllEquips(LocalRole role, PartnerSlotInfo slot, out string error,
+            bool checkCapacity = true)
+        {
+            error = "";
+            if (role == null || slot == null || slot.Equips == null)
+                return true;
+            if (role.BagData == null)
+                role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+
+            int count = 0;
+            for (int i = 1; i < slot.Equips.Count; i++)
+            {
+                SlotInfo equip = slot.Equips[i];
+                if (equip != null && equip.Item != null)
+                    count++;
+            }
+            if (count == 0)
+                return true;
+
+            // 原服：equipnum > p.bagEquipLeftCount() → ErrBagFull
+            if (checkCapacity && !EquipRuleService.CanAddEquipCount(role, count, out error))
+                return false;
+
+            for (int i = 1; i < slot.Equips.Count; i++)
+            {
+                SlotInfo equip = slot.Equips[i];
+                if (equip == null || equip.Item == null)
+                    continue;
+                role.BagData.ItemList.Add(equip.Item);
+                equip.Item = null;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 下阵时把该伙伴的技能从技能槽里清掉（原服 partnerRest 的"自动下阵伙伴技能"）。
+        /// 不清的话技能槽会残留一个已经不在场上的伙伴技能。
+        /// </summary>
+        private static void ClearPartnerSkillSlots(LocalRole role, PartnerInfo partner)
+        {
+            if (role == null || partner == null)
+                return;
+            if (partner.Skills == null || partner.Skills.Count == 0)
+                return;
+            if (role.SkillSlots == null)
+                return;
+
+            bool changed = false;
+            for (int s = 0; s < role.SkillSlots.Length; s++)
+            {
+                if (role.SkillSlots[s] <= 0)
+                    continue;
+                for (int k = 0; k < partner.Skills.Count; k++)
+                {
+                    SkillInfo skill = partner.Skills[k];
+                    if (skill != null && skill.CfgId == role.SkillSlots[s])
+                    {
+                        role.SkillSlots[s] = 0;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            if (changed)
+                LocalPusher.Instance.PushSkillSlotNow();
         }
 
         /// <summary>伙伴替换：直接把槽位换成指定伙伴（原槽位伙伴自动下阵）</summary>
@@ -239,6 +337,12 @@ namespace HotUpdateScripts.LocalNet
                 return resp;
             }
             EnsureSlots(role);
+
+            if (BattleService.Instance.InBattle)
+            {
+                resp.Error = "战斗中不能更换伙伴";
+                return resp;
+            }
 
             if (req == null)
             {
@@ -284,18 +388,54 @@ namespace HotUpdateScripts.LocalNet
                 }
             }
 
-            // 目标伙伴若已在别的槽位，先从那里下阵
+            // 原服 PartnerReplace = 先走一遍"下阵"（脱光装备 + 清技能槽）再上阵新伙伴。
+            // 要腾空的槽位：本槽的旧伙伴 + 目标伙伴可能已在的其他槽。
+            var toRest = new List<PartnerSlotInfo>();
+            if (slot.PartnerUid > 0 && slot.PartnerUid != req.PartnerUid)
+                toRest.Add(slot);
             for (int i = 0; i < role.PartnerSlots.Count; i++)
             {
                 PartnerSlotInfo other = role.PartnerSlots[i];
                 if (other == null || other.SlotId == slot.SlotId)
                     continue;
                 if (other.PartnerUid == req.PartnerUid)
-                    other.PartnerUid = 0;
+                    toRest.Add(other);
+            }
+
+            // 先按合计件数校验一次背包空间，避免脱一半失败
+            int equipNeed = 0;
+            for (int i = 0; i < toRest.Count; i++)
+            {
+                PartnerSlotInfo s = toRest[i];
+                if (s.Equips == null)
+                    continue;
+                for (int k = 1; k < s.Equips.Count; k++)
+                {
+                    if (s.Equips[k] != null && s.Equips[k].Item != null)
+                        equipNeed++;
+                }
+            }
+            string bagError;
+            if (equipNeed > 0 && !EquipRuleService.CanAddEquipCount(role, equipNeed, out bagError))
+            {
+                resp.Error = bagError;
+                return resp;
+            }
+
+            for (int i = 0; i < toRest.Count; i++)
+            {
+                PartnerSlotInfo s = toRest[i];
+                string error;
+                // 已在上面按总数校验过，这里不再逐槽校验，避免重复计数误判
+                TakeOffAllEquips(role, s, out error, false);
+                ClearPartnerSkillSlots(role, FindPartner(role, s.PartnerUid));
+                s.PartnerUid = 0;
             }
 
             slot.PartnerUid = req.PartnerUid;
             Refresh(role);
+            LocalPusher.Instance.PushPartnerSlot();
+            LocalPusher.Instance.PushBagInfoNow();
             resp.Code = 0;
             return resp;
         }
@@ -590,6 +730,18 @@ namespace HotUpdateScripts.LocalNet
                     if (attr == null || attr.key <= 0 || attr.value == 0)
                         continue;
                     AddValue(values, (Attribute)attr.key, attr.value);
+                }
+            }
+
+            // 出生（固定）属性：原服 refreshStats 里 BornValue 那段
+            if (cfg.BornValue != null)
+            {
+                for (int i = 0; i < cfg.BornValue.Length; i++)
+                {
+                    CFGItem_Partner.StarConsumeItem.Item born = cfg.BornValue[i];
+                    if (born == null || born.key <= 0 || born.value == 0)
+                        continue;
+                    AddValue(values, (Attribute)born.key, born.value);
                 }
             }
 

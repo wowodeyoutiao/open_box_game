@@ -71,6 +71,13 @@ public class CFGItem_Partner : CFGItemBase
     public StarConsumeItem[] StarConsume;
 
     public StarConsumeItem[] StarAttribute;
+
+    /// <summary>
+    /// 出生（固定）属性，格式与 ChipNum 相同：[{属性id:数值}]。
+    /// 原服 refreshStats 里 `for _, v := range par.cfg.BornValue { par.stats.setStats }`。
+    /// 36 个伙伴里只有 51/52/53 三个配了，其余为 null。
+    /// </summary>
+    public StarConsumeItem.Item[] BornValue;
     public class StarConsumeItem
     {
         public class Item

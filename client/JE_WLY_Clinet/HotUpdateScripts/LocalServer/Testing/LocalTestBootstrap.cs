@@ -4098,6 +4098,16 @@ namespace HotUpdateScripts.LocalNet.Testing
                     }
                     return 0;
                 };
+                Func<long, bool> inBagByUid = uid =>
+                {
+                    for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                    {
+                        ItemInfo bagItem = role.BagData.ItemList[i];
+                        if (bagItem != null && bagItem.Uid == uid)
+                            return true;
+                    }
+                    return false;
+                };
 
                 // 1) 槽位没伙伴 → 拒绝
                 ItemService.Instance.GrantReward(role, 101, 1);
@@ -4236,18 +4246,33 @@ namespace HotUpdateScripts.LocalNet.Testing
                     "pe.takeOff=" + (takeOff == null ? "null" : takeOff.Code + "/" + takeOff.Error));
                 // 注意：这里不能用「背包里第一件 101」比对 —— 步骤 3 还往包里塞了一件 101，
                 // 必须按 uid 精确找。
-                bool backToBag = false;
-                for (int i = 0; i < role.BagData.ItemList.Count; i++)
-                {
-                    ItemInfo bagItem = role.BagData.ItemList[i];
-                    if (bagItem != null && bagItem.Uid == weaponUid)
-                    {
-                        backToBag = true;
-                        break;
-                    }
-                }
+                bool backToBag = inBagByUid(weaponUid);
                 result.Check(slot.Equips[1].Item == null && backToBag,
                     "pe.takeOffBag=" + (backToBag ? "back" : "missing"));
+
+                // 9) 下阵必须自动脱装备（原服 partnerRest）：先穿回去，再整体下阵
+                var reEquip = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(reEquip != null && reEquip.Code == 0,
+                    "pe.reEquip=" + (reEquip == null ? "null" : reEquip.Code + "/" + reEquip.Error));
+                result.Check(slot.Equips[1].Item != null, "pe.reEquipSlot=" + (slot.Equips[1].Item != null ? "on" : "off"));
+
+                var rest = PartnerService.Instance.Rest(new PartnerRestRequest { SlotId = 1 });
+                result.Check(rest != null && rest.Code == 0,
+                    "pe.rest=" + (rest == null ? "null" : rest.Code + "/" + rest.Error));
+                // 修复前：下阵只清 PartnerUid，装备留在空槽里 ⇒ 既不在背包也不在身上，永久丢失
+                result.Check(slot.PartnerUid == 0 && slot.Equips[1].Item == null,
+                    "pe.restSlot=" + (slot.Equips[1].Item == null ? "empty" : "stuck"));
+                result.Check(inBagByUid(weaponUid),
+                    "pe.restBag=" + (inBagByUid(weaponUid) ? "back" : "missing"));
+                // 槽位的强化/升星进度要保留（原服 changeEquip(2) 只把 ItemId 置 0）
+                result.Check(slot.Equips[1].Enhance == 0 && slot.Equips[1].Stars == 0,
+                    "pe.restKeepSlot=ok");
             }
             catch (Exception e)
             {

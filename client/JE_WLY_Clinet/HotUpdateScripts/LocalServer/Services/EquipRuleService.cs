@@ -195,6 +195,54 @@ namespace HotUpdateScripts.LocalNet
             return true;
         }
 
+        /// <summary>
+        /// 批量校验：背包还能不能再放下 addCount 件装备。
+        /// 对齐原服 `equipnum > p.bagEquipLeftCount()` 的整体校验（逐件 CanAddToBag 在批量脱下时会低估）。
+        /// </summary>
+        public static bool CanAddEquipCount(LocalRole role, int addCount, out string error)
+        {
+            error = "";
+            if (role == null || addCount <= 0)
+                return true;
+
+            var bag = role.BagData;
+            int currentTotal = bag != null && bag.ItemList != null ? bag.ItemList.Count : 0;
+            int currentEquip = 0;
+            if (bag != null && bag.ItemList != null)
+            {
+                for (int i = 0; i < bag.ItemList.Count; i++)
+                {
+                    if (bag.ItemList[i] != null && IsEquipment(bag.ItemList[i]))
+                        currentEquip++;
+                }
+            }
+
+            int totalLimit = 500;
+            int equipLimit = 200;
+            try
+            {
+                CFG_XMLConfig.XML_Config config = CFG_XMLConfig.xmlConfig;
+                if (config != null && config.BaseValue != null && config.BaseValue.bagNum != null)
+                {
+                    totalLimit = config.BaseValue.bagNum.totlenum;
+                    equipLimit = config.BaseValue.bagNum.equipnum;
+                }
+            }
+            catch { }
+
+            if (currentEquip + addCount > equipLimit)
+            {
+                error = "装备背包已满";
+                return false;
+            }
+            if (currentTotal + addCount > totalLimit)
+            {
+                error = "背包已满";
+                return false;
+            }
+            return true;
+        }
+
         /// <summary>校验把一件道具放入背包后是否超容量。</summary>
         public static bool CanAddToBag(LocalRole role, ItemInfo item, out string error)
         {
