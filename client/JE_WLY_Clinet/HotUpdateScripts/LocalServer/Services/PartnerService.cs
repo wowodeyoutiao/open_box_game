@@ -849,6 +849,35 @@ namespace HotUpdateScripts.LocalNet
                         AddValue(values, stat.attr, stat.Num);
                     }
                 }
+
+                // 魂石属性（原服 refreshStats 宝石段；自然加成/魂石大师留待后续）
+                if (equip.Gemstone != null)
+                {
+                    for (int g = 0; g < equip.Gemstone.Length && g < LocalRole.GemSlotCount; g++)
+                    {
+                        int gemId = equip.Gemstone[g];
+                        if (gemId <= 0)
+                            continue;
+                        CFGItem_Item gemCfg;
+                        try { gemCfg = CFG_Item.GetById(gemId); }
+                        catch { gemCfg = null; }
+                        if (gemCfg == null)
+                            continue;
+
+                        AddValue(values, Attribute.PHYSICAL_ATTACK, PartnerToInt(gemCfg.Phyatk));
+                        AddValue(values, Attribute.MAGIC_ATTACK, PartnerToInt(gemCfg.Magatk));
+                        AddValue(values, Attribute.PHYSICAL_DEFENSE, PartnerToInt(gemCfg.Phydef));
+                        AddValue(values, Attribute.MAGIC_DEFENSE, PartnerToInt(gemCfg.Magdef));
+                        AddValue(values, Attribute.MAX_HEALTH, PartnerToInt(gemCfg.HP));
+                        AddValue(values, Attribute.HIT, PartnerToInt(gemCfg.Hit));
+                        AddValue(values, Attribute.DODGE, PartnerToInt(gemCfg.Miss));
+                        AddValue(values, Attribute.CRITICAL_STRIKE, PartnerToInt(gemCfg.Crit));
+                        AddValue(values, Attribute.TOUGHNESS, PartnerToInt(gemCfg.Decrit));
+                        AddValue(values, Attribute.PVP_DAMAGE_PERCENTAGE, PartnerToInt(gemCfg.PVPdamage));
+                        AddValue(values, Attribute.PVE_DAMAGE_PERCENTAGE, PartnerToInt(gemCfg.PVEdamage));
+                        AddValue(values, Attribute.HEALTH_PERCENTAGE, PartnerToInt(gemCfg.HPPercent));
+                    }
+                }
             }
         }
 

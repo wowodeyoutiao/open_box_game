@@ -140,6 +140,10 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunPartnerItem());
                 if (scenario == "all" || scenario == "partner_equip")
                     cases.Add(RunPartnerEquip());
+                if (scenario == "all" || scenario == "partner_gem")
+                    cases.Add(RunPartnerGem());
+                if (scenario == "all" || scenario == "partner_upgrade")
+                    cases.Add(RunPartnerUpgrade());
                 if (scenario == "all" || scenario == "home_afk")
                     cases.Add(RunHomeAFKReset());
 
@@ -4280,6 +4284,312 @@ namespace HotUpdateScripts.LocalNet.Testing
             }
             finally
             {
+                BattleService.Instance.Exit();
+                role.PartnerSlots = oldSlots;
+                if (role.BagData != null && oldBag != null)
+                    role.BagData.ItemList = oldBag;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 伙伴魂石（②-B 2026-10-28）：Gemstone 存在 PartnerSlot.Equips[slot] 上（原服 Slot.Gemstone），
+        /// 魂石槽开启数按**伙伴等级**算，不是玩家等级。
+        /// 10001（1级红魂石）DiamondPosition=[1,5,6] 可镶武器位，+10 物攻。
+        /// </summary>
+        private static CaseResult RunPartnerGem()
+        {
+            var result = new CaseResult("partner_gem");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
+            try
+            {
+                BattleService.Instance.Exit();
+                role.Level = 40;
+                role.PartnerSlots = new List<PartnerSlotInfo>();
+                PartnerService.Instance.EnsureSlots(role);
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+                role.BagData.ItemList = new List<ItemInfo>();
+
+                // 1) 槽位没有伙伴
+                var noPartner = GemService.Instance.Change(new GemstoneChangeRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    GemstoneSlot = GemstoneSlot.INVALID_GemstoneSlot,
+                    ItemUid = 10001,
+                    PartnerSlotId = 1,
+                });
+                result.Check(noPartner != null && noPartner.Code != 0 && noPartner.Error == "该槽位没有伙伴",
+                    "pg.noPartner=" + (noPartner == null ? "null" : noPartner.Error));
+
+                // 2) 上阵伙伴（魂石槽按伙伴等级算，等级抬到 40 才有槽）
+                PartnerService.Instance.AddPartner(role, 1);
+                PartnerInfo partner = null;
+                for (int i = 0; i < role.Partners.Count; i++)
+                {
+                    if (role.Partners[i] != null && role.Partners[i].CfgId == 1)
+                    {
+                        partner = role.Partners[i];
+                        break;
+                    }
+                }
+                if (partner == null)
+                {
+                    result.Fail("伙伴创建失败");
+                    return result;
+                }
+                partner.Level = 40;
+                PartnerService.Instance.Combat(new PartnerCombatRequest { SlotId = 1, PartnerUid = partner.Uid });
+
+                // 3) 伙伴没穿装备的部位不能镶
+                var noEquip = GemService.Instance.Change(new GemstoneChangeRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Clothes,
+                    GemstoneSlot = GemstoneSlot.INVALID_GemstoneSlot,
+                    ItemUid = 10001,
+                    PartnerSlotId = 1,
+                });
+                result.Check(noEquip != null && noEquip.Code != 0 && noEquip.Error == "该部位没有装备",
+                    "pg.noEquip=" + (noEquip == null ? "null" : noEquip.Error));
+
+                // 4) 穿上武器再镶
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long weaponUid = 0;
+                for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                {
+                    if (role.BagData.ItemList[i] != null && role.BagData.ItemList[i].CfgId == 101)
+                    {
+                        weaponUid = role.BagData.ItemList[i].Uid;
+                        break;
+                    }
+                }
+                var equip = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(equip != null && equip.Code == 0,
+                    "pg.equip=" + (equip == null ? "null" : equip.Code + "/" + equip.Error));
+
+                ItemService.Instance.GrantReward(role, 10001, 2);
+                RoleStatService.Instance.RecalculateCurrent();
+                int combatBefore = role.TotalCombat;
+
+                var inlay = GemService.Instance.Change(new GemstoneChangeRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    GemstoneSlot = GemstoneSlot.INVALID_GemstoneSlot,
+                    ItemUid = 10001,
+                    PartnerSlotId = 1,
+                });
+                result.Check(inlay != null && inlay.Code == 0,
+                    "pg.inlay=" + (inlay == null ? "null" : inlay.Code + "/" + inlay.Error));
+
+                PartnerSlotInfo slot = role.FindPartnerSlot(1);
+                int gemInSlot = slot != null && slot.Equips != null && slot.Equips.Count > 1
+                    && slot.Equips[1] != null && slot.Equips[1].Gemstone != null
+                    && slot.Equips[1].Gemstone.Length > 0
+                    ? slot.Equips[1].Gemstone[0] : -1;
+                result.Check(gemInSlot == 10001, "pg.gemSlot=" + gemInSlot);
+                result.Check(ItemService.CountItem(role, 10001) == 1,
+                    "pg.consumed=" + ItemService.CountItem(role, 10001));
+
+                RoleStatService.Instance.RecalculateCurrent();
+                result.Check(role.TotalCombat > combatBefore,
+                    "pg.combat=" + role.TotalCombat + ">" + combatBefore);
+
+                // 5) 玩家同部位宝石不受影响（两套存储互相独立）
+                int[] playerGems = role.GetEquipGems(EquipSlot.Weapon);
+                result.Check(playerGems[0] == 0, "pg.playerIsolated=" + playerGems[0]);
+
+                // 6) 拆卸回背包
+                var remove = GemService.Instance.Change(new GemstoneChangeRequest
+                {
+                    OpType = 2,
+                    Slot = EquipSlot.Weapon,
+                    GemstoneSlot = GemstoneSlot.INVALID_GemstoneSlot,
+                    ItemUid = 10001,
+                    PartnerSlotId = 1,
+                });
+                result.Check(remove != null && remove.Code == 0,
+                    "pg.remove=" + (remove == null ? "null" : remove.Code + "/" + remove.Error));
+                gemInSlot = slot.Equips[1].Gemstone[0];
+                result.Check(gemInSlot == 0 && ItemService.CountItem(role, 10001) == 2,
+                    "pg.removeBack=" + gemInSlot + "/" + ItemService.CountItem(role, 10001));
+            }
+            catch (Exception e)
+            {
+                result.Fail(e.ToString());
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.PartnerSlots = oldSlots;
+                if (role.BagData != null && oldBag != null)
+                    role.BagData.ItemList = oldBag;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 伙伴装备强化/升星（②-C 2026-10-28）。
+        /// 槽位的 Enhance/Stars 存在 PartnerSlot.Equips[slot] 上：
+        ///   · 强化上限按**伙伴等级** × Equipstrenghthen.rate（原服 enhance 的伙伴分支）
+        ///   · 取配置的职业用伙伴 `cfg.job % 10`（原服这里用玩家职业，但属性计算用伙伴职业，两边不一致，这里统一）
+        /// </summary>
+        private static CaseResult RunPartnerUpgrade()
+        {
+            var result = new CaseResult("partner_upgrade");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
+            int oldForcedWeight = EquipService.Instance.ForcedStarWeight;
+            try
+            {
+                BattleService.Instance.Exit();
+                role.Level = 40;
+                role.PartnerSlots = new List<PartnerSlotInfo>();
+                PartnerService.Instance.EnsureSlots(role);
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+                role.BagData.ItemList = new List<ItemInfo>();
+
+                PartnerService.Instance.AddPartner(role, 1);
+                PartnerInfo partner = null;
+                for (int i = 0; i < role.Partners.Count; i++)
+                {
+                    if (role.Partners[i] != null && role.Partners[i].CfgId == 1)
+                    {
+                        partner = role.Partners[i];
+                        break;
+                    }
+                }
+                if (partner == null)
+                {
+                    result.Fail("伙伴创建失败");
+                    return result;
+                }
+                partner.Level = 40;
+                PartnerService.Instance.Combat(new PartnerCombatRequest { SlotId = 1, PartnerUid = partner.Uid });
+
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long weaponUid = 0;
+                for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                {
+                    if (role.BagData.ItemList[i] != null && role.BagData.ItemList[i].CfgId == 101)
+                    {
+                        weaponUid = role.BagData.ItemList[i].Uid;
+                        break;
+                    }
+                }
+                var equip = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(equip != null && equip.Code == 0,
+                    "pu.equip=" + (equip == null ? "null" : equip.Code + "/" + equip.Error));
+
+                // 材料备足
+                ItemService.Instance.GrantReward(role, 1, 100000000);
+                ItemService.Instance.GrantReward(role, 21, 2000);
+                ItemService.Instance.GrantReward(role, 22, 2000);
+
+                PartnerSlotInfo slot = role.FindPartnerSlot(1);
+                RoleStatService.Instance.RecalculateCurrent();
+                int combatBefore = role.TotalCombat;
+
+                // 1) 伙伴槽强化（空槽拒绝先从别的部位试）
+                var noEquipEnhance = EquipService.Instance.Enhance(new EnhanceRequest
+                {
+                    Slot = EquipSlot.Clothes,
+                    PartnerSlotId = 1,
+                });
+                result.Check(noEquipEnhance != null && noEquipEnhance.Code != 0
+                    && noEquipEnhance.Error == "该部位没有装备",
+                    "pu.enhanceNeedEquip=" + (noEquipEnhance == null ? "null" : noEquipEnhance.Error));
+
+                var enhance = EquipService.Instance.Enhance(new EnhanceRequest
+                {
+                    Slot = EquipSlot.Weapon,
+                    PartnerSlotId = 1,
+                });
+                result.Check(enhance != null && enhance.Code == 0 && enhance.NewLevel == 1,
+                    "pu.enhance=" + (enhance == null ? "null" : enhance.Code + "/" + enhance.NewLevel + "/" + enhance.Error));
+                result.Check(slot.Equips[1].Enhance == 1, "pu.enhanceSlot=" + slot.Equips[1].Enhance);
+                // 玩家侧同部位不受影响（两套存储互相独立）
+                result.Check(role.GetEquipEnhance(EquipSlot.Weapon) == 0,
+                    "pu.playerEnhanceIsolated=" + role.GetEquipEnhance(EquipSlot.Weapon));
+
+                // 2) 伙伴槽升星（强制成功分支）
+                EquipService.Instance.ForcedStarWeight = 0;
+                var stars = EquipService.Instance.Stars(new StarsRequest
+                {
+                    Slot = EquipSlot.Weapon,
+                    PartnerSlotId = 1,
+                });
+                result.Check(stars != null && stars.Code == 0 && stars.NewLevel == 1,
+                    "pu.stars=" + (stars == null ? "null" : stars.Code + "/" + stars.NewLevel + "/" + stars.Error));
+                result.Check(slot.Equips[1].Stars == 1, "pu.starsSlot=" + slot.Equips[1].Stars);
+                result.Check(role.GetEquipStars(EquipSlot.Weapon) == 0,
+                    "pu.playerStarsIsolated=" + role.GetEquipStars(EquipSlot.Weapon));
+
+                // 3) 强化/升星要进战力
+                RoleStatService.Instance.RecalculateCurrent();
+                result.Check(role.TotalCombat > combatBefore,
+                    "pu.combat=" + role.TotalCombat + ">" + combatBefore);
+
+                // 4) 存档往返保留槽位进度
+                SaveDocument doc = SaveDocumentMapper.FromLocalData(LocalData.Instance);
+                string json = JEngine.LitJson.JsonMapper.ToJson(doc);
+                List<LocalRole> restored = SaveDocumentMapper.ToLocalRoles(
+                    JEngine.LitJson.JsonMapper.ToObject<SaveDocument>(json));
+                bool saved = false;
+                if (restored != null && restored.Count > 0)
+                {
+                    restored[0].EnsurePartnerEquipSlots();
+                    PartnerSlotInfo rs = restored[0].FindPartnerSlot(1);
+                    saved = rs != null && rs.Equips[1] != null
+                        && rs.Equips[1].Enhance == 1 && rs.Equips[1].Stars == 1;
+                }
+                result.Check(saved, "pu.save=" + saved);
+            }
+            catch (Exception e)
+            {
+                result.Fail(e.ToString());
+            }
+            finally
+            {
+                EquipService.Instance.ForcedStarWeight = oldForcedWeight;
                 BattleService.Instance.Exit();
                 role.PartnerSlots = oldSlots;
                 if (role.BagData != null && oldBag != null)

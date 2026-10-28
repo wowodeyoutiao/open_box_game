@@ -51,8 +51,13 @@ namespace HotUpdateScripts.LocalNet
             }
             if (response.PartnerSlotId != 0)
             {
-                response.Error = "单机版暂不支持伙伴魂石";
-                return response;
+                // 原服 genstoneChange 的 partnerslotid 分支：equipsInfo 指向伙伴槽的 Slot
+                if (!PartnerService.IsValidSlot(response.PartnerSlotId)
+                    || ResolvePartner(role, response.PartnerSlotId) == null)
+                {
+                    response.Error = "该槽位没有伙伴";
+                    return response;
+                }
             }
 
             int gemIndex = (int)response.GemstoneSlot;
@@ -62,27 +67,95 @@ namespace HotUpdateScripts.LocalNet
                 return response;
             }
 
-            ItemInfo equipped;
-            if (role.Equips == null || !role.Equips.TryGetValue(response.Slot, out equipped)
-                || equipped == null)
+            int[] gems = ResolveGemArray(role, response.Slot, response.PartnerSlotId);
+            if (gems == null)
             {
                 response.Error = "该部位没有装备";
                 return response;
             }
 
             if (response.OpType == 1)
-                return Inlay(response, role, gemIndex);
+                return Inlay(response, role, gemIndex, gems);
             if (response.OpType == 2)
-                return Remove(response, role, gemIndex);
+                return Remove(response, role, gemIndex, gems);
 
             response.Error = "魂石操作类型不合法";
             return response;
         }
 
-        /// <summary>穿上魂石（原服 genstoneChange opType == 1）。</summary>
-        private GemstoneChangeResponse Inlay(GemstoneChangeResponse response, LocalRole role, int gemIndex)
+        /// <summary>
+        /// 取某个装备位的魂石数组（长度 4）。
+        /// 玩家：role.EquipGems[slot]；伙伴：PartnerSlot.Equips[slot].Gemstone（原服 Slot.Gemstone）。
+        /// 返回 null 表示该部位没有装备（调用方报"该部位没有装备"）。
+        /// 返回的是**内部数组引用**，直接改元素即生效。
+        /// </summary>
+        private static int[] ResolveGemArray(LocalRole role, EquipSlot slot, int partnerSlotId)
         {
-            int canSlot = GetOpenGemSlotCount(role.Level);
+            if (role == null)
+                return null;
+
+            if (partnerSlotId == 0)
+            {
+                if (role.Equips == null || !role.Equips.ContainsKey(slot)
+                    || role.Equips[slot] == null)
+                    return null;
+                return role.GetEquipGems(slot);
+            }
+
+            PartnerSlotInfo partnerSlot = role.FindPartnerSlot(partnerSlotId);
+            if (partnerSlot == null || partnerSlot.PartnerUid <= 0 || partnerSlot.Equips == null)
+                return null;
+            int index = (int)slot;
+            if (index <= (int)EquipSlot.INVALID_EquipSlot || index >= partnerSlot.Equips.Count)
+                return null;
+            SlotInfo equip = partnerSlot.Equips[index];
+            if (equip == null || equip.Item == null)
+                return null;
+
+            if (equip.Gemstone == null || equip.Gemstone.Length != LocalRole.GemSlotCount)
+            {
+                var gems = new int[LocalRole.GemSlotCount];
+                if (equip.Gemstone != null)
+                {
+                    int copy = equip.Gemstone.Length < LocalRole.GemSlotCount
+                        ? equip.Gemstone.Length : LocalRole.GemSlotCount;
+                    System.Array.Copy(equip.Gemstone, gems, copy);
+                }
+                equip.Gemstone = gems;
+            }
+            return equip.Gemstone;
+        }
+
+        /// <summary>伙伴槽上的伙伴（无效返回 null）。</summary>
+        private static PartnerInfo ResolvePartner(LocalRole role, int partnerSlotId)
+        {
+            if (role == null)
+                return null;
+            PartnerSlotInfo partnerSlot = role.FindPartnerSlot(partnerSlotId);
+            if (partnerSlot == null || partnerSlot.PartnerUid <= 0)
+                return null;
+            return PartnerService.Instance.FindPartnerByUid(role, partnerSlot.PartnerUid);
+        }
+
+        /// <summary>
+        /// 魂石槽开启数按**装备所有者**的等级算：玩家 → 玩家等级；伙伴 → 伙伴等级
+        /// （原服 genstoneChangeAll 里 `delLevel = p.getPartnerInfoBySlotId(...).level`）。
+        /// </summary>
+        private static int ResolveOwnerLevel(LocalRole role, int partnerSlotId)
+        {
+            if (role == null)
+                return 0;
+            if (partnerSlotId == 0)
+                return role.Level;
+            PartnerInfo partner = ResolvePartner(role, partnerSlotId);
+            return partner == null ? 0 : (partner.Level > 0 ? partner.Level : 1);
+        }
+
+        /// <summary>穿上魂石（原服 genstoneChange opType == 1）。</summary>
+        private GemstoneChangeResponse Inlay(GemstoneChangeResponse response, LocalRole role,
+            int gemIndex, int[] gems)
+        {
+            int canSlot = GetOpenGemSlotCount(ResolveOwnerLevel(role, response.PartnerSlotId));
             if (gemIndex >= canSlot)
             {
                 response.Error = "魂石槽位未开启";
@@ -125,12 +198,12 @@ namespace HotUpdateScripts.LocalNet
                 return response;
             }
 
-            int[] gems = role.GetEquipGems(response.Slot);
+            int[] innerGems = gems;
             // 原服：槽位已有宝石先把旧宝石退回背包，再扣新宝石
-            if (gems[gemIndex] > 0)
-                ItemService.Instance.GrantReward(role, gems[gemIndex], 1);
+            if (innerGems[gemIndex] > 0)
+                ItemService.Instance.GrantReward(role, innerGems[gemIndex], 1);
             ItemService.ConsumeItem(role, gemCfgId, 1);
-            gems[gemIndex] = gemCfgId;
+            innerGems[gemIndex] = gemCfgId;
 
             Commit(role);
             response.Code = 0;
@@ -140,9 +213,9 @@ namespace HotUpdateScripts.LocalNet
         }
 
         /// <summary>拆下魂石（原服 genstoneChange opType == 2）。空槽原服直接返回成功。</summary>
-        private GemstoneChangeResponse Remove(GemstoneChangeResponse response, LocalRole role, int gemIndex)
+        private GemstoneChangeResponse Remove(GemstoneChangeResponse response, LocalRole role,
+            int gemIndex, int[] gems)
         {
-            int[] gems = role.GetEquipGems(response.Slot);
             if (gems[gemIndex] <= 0)
             {
                 // 原服：equipsInfo.Gemstone[stoneSlot] == 0 → return nil（Code=0）
@@ -157,7 +230,7 @@ namespace HotUpdateScripts.LocalNet
             Commit(role);
             response.Code = 0;
             Log.Print("[GemService] remove slot=" + (int)response.Slot + " gemSlot=" + gemIndex
-                + " cfg=" + gemCfgId);
+                + " cfg=" + gemCfgId + " partner=" + response.PartnerSlotId);
             return response;
         }
 
@@ -217,15 +290,16 @@ namespace HotUpdateScripts.LocalNet
                 response.Error = "装备槽位不合法";
                 return response;
             }
-            if (response.PartnerSlotId != 0)
+            if (response.PartnerSlotId != 0
+                && (!PartnerService.IsValidSlot(response.PartnerSlotId)
+                    || ResolvePartner(role, response.PartnerSlotId) == null))
             {
-                response.Error = "单机版暂不支持伙伴魂石";
+                response.Error = "该槽位没有伙伴";
                 return response;
             }
 
-            ItemInfo equipped;
-            if (role.Equips == null || !role.Equips.TryGetValue(response.Slot, out equipped)
-                || equipped == null)
+            int[] allGems = ResolveGemArray(role, response.Slot, response.PartnerSlotId);
+            if (allGems == null)
             {
                 response.Error = "该部位没有装备";
                 return response;
@@ -262,8 +336,8 @@ namespace HotUpdateScripts.LocalNet
                 }
             }
 
-            int canSlot = GetOpenGemSlotCount(role.Level);
-            int[] gems = role.GetEquipGems(response.Slot);
+            int canSlot = GetOpenGemSlotCount(ResolveOwnerLevel(role, response.PartnerSlotId));
+            int[] gems = allGems;
 
             // ② 身上 4 槽整理成 old[]
             var old = new List<GemCandidate>();

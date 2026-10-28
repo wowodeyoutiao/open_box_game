@@ -23,6 +23,84 @@ namespace HotUpdateScripts.LocalNet
         private const int DefaultEnhanceRate = 1;
 
         /// <summary>装备强化。</summary>
+        /// <summary>
+        /// 解析伙伴装备槽（强化/升星/宝石都用它）。
+        /// 职业取 `cfg.job % 10`，等级取伙伴等级 —— 与原服 refreshStats 的属性段一致。
+        /// ⚠️ 原服 enhance/stars 里 uuid 用的是**玩家**职业（`p.job%10*1000`），
+        ///    而属性计算用的是**伙伴**职业（`par.cfg.Job%10*1000`），两边取表不一致。
+        ///    这里统一按伙伴职业取，否则强化出来的属性永远对不上。
+        /// </summary>
+        private static bool ResolvePartnerEquip(
+            LocalRole role,
+            int partnerSlotId,
+            EquipSlot slot,
+            out PartnerSlotInfo partnerSlot,
+            out SlotInfo partnerEquip,
+            out int job,
+            out int ownerLevel,
+            out string error)
+        {
+            partnerSlot = null;
+            partnerEquip = null;
+            job = 0;
+            ownerLevel = 0;
+            error = "";
+
+            if (role == null)
+            {
+                error = "没有角色";
+                return false;
+            }
+            if (!PartnerService.IsValidSlot(partnerSlotId))
+            {
+                error = "伙伴槽位不合法";
+                return false;
+            }
+
+            role.EnsurePartnerEquipSlots();
+            partnerSlot = role.FindPartnerSlot(partnerSlotId);
+            if (partnerSlot == null || partnerSlot.PartnerUid <= 0)
+            {
+                error = "该槽位没有伙伴";
+                return false;
+            }
+
+            PartnerInfo partner = PartnerService.Instance.FindPartnerByUid(role, partnerSlot.PartnerUid);
+            if (partner == null)
+            {
+                error = "伙伴不存在";
+                return false;
+            }
+
+            int index = (int)slot;
+            if (index <= (int)EquipSlot.INVALID_EquipSlot || index >= partnerSlot.Equips.Count)
+            {
+                error = "装备槽位不合法";
+                return false;
+            }
+            partnerEquip = partnerSlot.Equips[index];
+            if (partnerEquip == null || partnerEquip.Item == null)
+            {
+                error = "该部位没有装备";
+                return false;
+            }
+
+            job = role.Job;
+            try
+            {
+                CFGItem_Partner partnerCfg = CFG_Partner.GetById(partner.CfgId);
+                if (partnerCfg != null)
+                {
+                    int partnerJob = EquipRuleService.ToInt(partnerCfg.job) % 10;
+                    if (partnerJob > 0)
+                        job = partnerJob;
+                }
+            }
+            catch { }
+            ownerLevel = partner.Level > 0 ? partner.Level : 1;
+            return true;
+        }
+
         public EnhanceResponse Enhance(EnhanceRequest req)
         {
             var response = new EnhanceResponse
@@ -47,24 +125,37 @@ namespace HotUpdateScripts.LocalNet
                 response.Error = "装备槽位不合法";
                 return response;
             }
-            if (response.PartnerSlotId != 0)
+            // 伙伴分支：原服 enhance(partnerslotid != 0)，上限按**伙伴等级**算
+            PartnerSlotInfo partnerSlot = null;
+            SlotInfo partnerEquip = null;
+            int job = role.Job;
+            int ownerLevel = role.Level;
+
+            if (response.PartnerSlotId == 0)
             {
-                response.Error = "单机版暂不支持伙伴装备强化";
-                return response;
+                // 槽位要有装备才强化（原服 Slot 结构常驻，这里加保护，避免空槽浪费材料）
+                ItemInfo equipped;
+                if (role.Equips == null || !role.Equips.TryGetValue(response.Slot, out equipped)
+                    || equipped == null)
+                {
+                    response.Error = "该部位没有装备";
+                    return response;
+                }
+            }
+            else
+            {
+                string partnerError;
+                if (!ResolvePartnerEquip(role, response.PartnerSlotId, response.Slot,
+                        out partnerSlot, out partnerEquip, out job, out ownerLevel, out partnerError))
+                {
+                    response.Error = partnerError;
+                    return response;
+                }
             }
 
-            // 槽位要有装备才强化（原服 Slot 结构常驻，这里加保护，避免空槽浪费材料）
-            ItemInfo equipped;
-            if (role.Equips == null || !role.Equips.TryGetValue(response.Slot, out equipped)
-                || equipped == null)
-            {
-                response.Error = "该部位没有装备";
-                return response;
-            }
-
-            int current = role.GetEquipEnhance(response.Slot);
-            // 上限：角色等级 × rate
-            int maxLevel = role.Level * GetEnhanceRate();
+            int current = partnerEquip != null ? partnerEquip.Enhance : role.GetEquipEnhance(response.Slot);
+            // 上限：所有者等级 × rate
+            int maxLevel = ownerLevel * GetEnhanceRate();
             if (current >= maxLevel)
             {
                 response.Error = "已达最高强化等级";
@@ -73,7 +164,7 @@ namespace HotUpdateScripts.LocalNet
             }
 
             CFGItem_EquipStrengthen cfg = null;
-            try { cfg = CFG_EquipStrengthen.GetByJobAndLv(role.Job, current); }
+            try { cfg = CFG_EquipStrengthen.GetByJobAndLv(job, current); }
             catch { cfg = null; }
             if (cfg == null)
             {
@@ -111,9 +202,16 @@ namespace HotUpdateScripts.LocalNet
                 }
             }
 
-            if (role.EquipEnhance == null)
-                role.EquipEnhance = new Dictionary<EquipSlot, int>();
-            role.EquipEnhance[response.Slot] = current + 1;
+            if (partnerEquip != null)
+            {
+                partnerEquip.Enhance = current + 1;
+            }
+            else
+            {
+                if (role.EquipEnhance == null)
+                    role.EquipEnhance = new Dictionary<EquipSlot, int>();
+                role.EquipEnhance[response.Slot] = current + 1;
+            }
 
             RoleStatService.Instance.Recalculate(role, false);
             TaskService.Instance.Dispatch(role, TargetType.ANY_EQUIP_STRENGTHENED_TO_LEVEL,
@@ -123,12 +221,15 @@ namespace HotUpdateScripts.LocalNet
             SaveCoordinator.Instance.SaveNow();
             LocalPusher.Instance.PushUserBaseNow();
             LocalPusher.Instance.PushStatsNow();
-            LocalPusher.Instance.PushEquipEnhanceNow(response.Slot, current + 1);
+            if (partnerEquip != null)
+                LocalPusher.Instance.PushPartnerSlot();
+            else
+                LocalPusher.Instance.PushEquipEnhanceNow(response.Slot, current + 1);
 
             response.Code = 0;
             response.NewLevel = current + 1;
-            Log.Print("[EquipService] enhance slot=" + slotValue + " " + current + " -> "
-                + response.NewLevel);
+            Log.Print("[EquipService] enhance slot=" + slotValue + " partner=" + response.PartnerSlotId
+                + " " + current + " -> " + response.NewLevel);
             return response;
         }
 
@@ -176,22 +277,35 @@ namespace HotUpdateScripts.LocalNet
                 response.Error = "装备槽位不合法";
                 return response;
             }
-            if (response.PartnerSlotId != 0)
+            // 伙伴分支：原服 stars(partnerslotid != 0)
+            PartnerSlotInfo partnerSlot = null;
+            SlotInfo partnerEquip = null;
+            int job = role.Job;
+            int ownerLevel = role.Level;
+
+            if (response.PartnerSlotId == 0)
             {
-                response.Error = "单机版暂不支持伙伴装备升星";
-                return response;
+                ItemInfo equipped;
+                if (role.Equips == null || !role.Equips.TryGetValue(response.Slot, out equipped)
+                    || equipped == null)
+                {
+                    response.Error = "该部位没有装备";
+                    return response;
+                }
+            }
+            else
+            {
+                string partnerError;
+                if (!ResolvePartnerEquip(role, response.PartnerSlotId, response.Slot,
+                        out partnerSlot, out partnerEquip, out job, out ownerLevel, out partnerError))
+                {
+                    response.Error = partnerError;
+                    return response;
+                }
             }
 
-            ItemInfo equipped;
-            if (role.Equips == null || !role.Equips.TryGetValue(response.Slot, out equipped)
-                || equipped == null)
-            {
-                response.Error = "该部位没有装备";
-                return response;
-            }
-
-            int stars = role.GetEquipStars(response.Slot);
-            int maxStar = GetMaxStar(role.Job);
+            int stars = partnerEquip != null ? partnerEquip.Stars : role.GetEquipStars(response.Slot);
+            int maxStar = GetMaxStar(job);
             if (stars >= maxStar)
             {
                 response.Error = "已达最高星级";
@@ -200,7 +314,7 @@ namespace HotUpdateScripts.LocalNet
             }
 
             CFGItem_EquipStar cfg = null;
-            try { cfg = CFG_EquipStar.GetByJobAndLv(role.Job, stars); }
+            try { cfg = CFG_EquipStar.GetByJobAndLv(job, stars); }
             catch { cfg = null; }
             if (cfg == null)
             {
@@ -258,9 +372,16 @@ namespace HotUpdateScripts.LocalNet
                     newStars = 0;
             }
 
-            if (role.EquipStars == null)
-                role.EquipStars = new Dictionary<EquipSlot, int>();
-            role.EquipStars[response.Slot] = newStars;
+            if (partnerEquip != null)
+            {
+                partnerEquip.Stars = newStars;
+            }
+            else
+            {
+                if (role.EquipStars == null)
+                    role.EquipStars = new Dictionary<EquipSlot, int>();
+                role.EquipStars[response.Slot] = newStars;
+            }
 
             // 无论成败都重算（失败掉星会掉属性）
             RoleStatService.Instance.Recalculate(role, false);
@@ -269,7 +390,10 @@ namespace HotUpdateScripts.LocalNet
             SaveCoordinator.Instance.SaveNow();
             LocalPusher.Instance.PushUserBaseNow();
             LocalPusher.Instance.PushStatsNow();
-            LocalPusher.Instance.PushEquipStarNow(response.Slot, newStars);
+            if (partnerEquip != null)
+                LocalPusher.Instance.PushPartnerSlot();
+            else
+                LocalPusher.Instance.PushEquipStarNow(response.Slot, newStars);
 
             response.Code = 0;
             response.NewLevel = newStars;

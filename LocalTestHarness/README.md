@@ -79,6 +79,9 @@ daily_map  每日副本：次数 / 结算奖励
 —— 养成 ——
 partner    伙伴获得 / 上阵 / 下阵 / 升星
 partner_item 伙伴整卡道具（Type 8）拦截 / 重复转碎片
+partner_equip 伙伴装备：穿脱 / 一键 / 按伙伴等级校验 / 下阵脱装备 / 防误分解 / 存档
+partner_gem  伙伴魂石镶嵌：槽位独立 / 槽位数按伙伴等级 / 拆卸回包
+partner_upgrade 伙伴装备强化升星：上限按伙伴等级 / 槽位进度存档
 skill      技能自动学习 / 槽位
 skill_action 技能升级 / 进阶 / 换槽
 skill_advance 技能进阶：档位配置 / 材料校验 / 伤害加成
