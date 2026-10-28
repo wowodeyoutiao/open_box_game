@@ -148,6 +148,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunPartnerReset());
                 if (scenario == "all" || scenario == "partner_master")
                     cases.Add(RunPartnerMaster());
+                if (scenario == "all" || scenario == "player_master")
+                    cases.Add(RunPlayerEquipMaster());
                 if (scenario == "all" || scenario == "home_afk")
                     cases.Add(RunHomeAFKReset());
 
@@ -5016,6 +5018,126 @@ namespace HotUpdateScripts.LocalNet.Testing
             {
                 BattleService.Instance.Exit();
                 role.Partners = oldPartners;
+                role.PartnerSlots = oldSlots;
+                if (role.BagData != null && oldBag != null)
+                    role.BagData.ItemList = oldBag;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 玩家侧强化大师 / 升星大师（2026-10-28 补齐，对齐 player.go:675-684）。
+        ///
+        /// 判定：全身最低强化等级 / 星级（12 个槽位、空槽按 0）≥ Limit 的最高达标档。
+        ///   equipmaster 1010(Limit10) → 攻 +5 / 魔攻 +4 / 物防 +3 / 魔防 +3
+        ///   equipmaster 2005(Limit5)  → 攻 +10 / 魔攻 +8 / 物防 +6 / 魔防 +6 + PVP/PVE 伤害% +100
+        ///
+        /// 隔离手法同 partner_master：槽位强化属性与大师加成会同时变动，
+        /// 所以先把 12 个部位的装备本体从 role.Equips 摘掉，只剩槽位上的 Enhance/Stars，
+        /// 这样装备属性与「槽位强化属性」都不参与，增量只可能来自大师段。
+        /// </summary>
+        private static CaseResult RunPlayerEquipMaster()
+        {
+            var result = new CaseResult("player_master");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            Dictionary<EquipSlot, ItemInfo> oldEquips = role.Equips;
+            Dictionary<EquipSlot, int> oldEnhance = role.EquipEnhance;
+            Dictionary<EquipSlot, int> oldStars = role.EquipStars;
+            List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
+            try
+            {
+                BattleService.Instance.Exit();
+                role.Level = 80;
+                role.PartnerSlots = new List<PartnerSlotInfo>();   // 排除伙伴属性干扰
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+                role.BagData.ItemList = new List<ItemInfo>();
+                role.Equips = new Dictionary<EquipSlot, ItemInfo>();
+                role.EquipEnhance = new Dictionary<EquipSlot, int>();
+                role.EquipStars = new Dictionary<EquipSlot, int>();
+
+                int atkBase = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+
+                // 1) 穿满 12 个部位
+                for (int cfgId = 101; cfgId <= 112; cfgId++)
+                {
+                    ItemService.Instance.GrantReward(role, cfgId, 1);
+                    long uid = 0;
+                    for (int i = role.BagData.ItemList.Count - 1; i >= 0; i--)
+                    {
+                        ItemInfo bagItem = role.BagData.ItemList[i];
+                        if (bagItem != null && bagItem.CfgId == cfgId)
+                        {
+                            uid = bagItem.Uid;
+                            break;
+                        }
+                    }
+                    if (uid <= 0)
+                        continue;
+                    ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                    {
+                        OpType = 1,
+                        Slot = (EquipSlot)(cfgId - 100),
+                        ItemUid = uid,
+                    }));
+                }
+                int equipped = role.Equips == null ? 0 : role.Equips.Count;
+                result.Check(equipped == 12, "pm2.equipped=" + equipped);
+                int atkEquipped = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+                result.Check(atkEquipped > atkBase,
+                    "pm2.equipAtk=" + atkBase + "->" + atkEquipped);
+
+                // 2) 摘掉装备本体，只剩槽位上的强化/星级 —— 大师段才能被精确隔离
+                role.Equips.Clear();
+                int atkNaked = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+                result.Check(atkNaked < atkEquipped,
+                    "pm2.nakedAtk=" + atkEquipped + "->" + atkNaked);
+
+                // 3) 强化大师：全身最低强化 10 → 1010 档（攻 +5）
+                for (int i = (int)EquipSlot.INVALID_EquipSlot + 1; i < (int)EquipSlot.MaxEquipSlot; i++)
+                    role.EquipEnhance[(EquipSlot)i] = 10;
+                int atkEnh = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+                result.Check(atkEnh - atkNaked == 5, "pm2.enhanceMaster=" + (atkEnh - atkNaked));
+
+                // 4) 升星大师：全身最低星级 5 → 2005 档（攻 +10）
+                for (int i = (int)EquipSlot.INVALID_EquipSlot + 1; i < (int)EquipSlot.MaxEquipSlot; i++)
+                    role.EquipStars[(EquipSlot)i] = 5;
+                int atkStar = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+                result.Check(atkStar - atkEnh == 10, "pm2.starMaster=" + (atkStar - atkEnh));
+
+                // 5) 「全身最低」语义：只把一个槽拉到 9 级，强化大师就该失效
+                role.EquipEnhance[(EquipSlot)12] = 9;
+                int atkDrop = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+                result.Check(atkStar - atkDrop == 5,
+                    "pm2.enhanceDropWhenLowest=" + (atkStar - atkDrop));
+
+                // 6) 一个槽都没强化 / 没升星 → 两段大师都不生效（原服空槽 Enhance/Stars = 0 的语义）
+                role.EquipEnhance = new Dictionary<EquipSlot, int>();
+                role.EquipStars = new Dictionary<EquipSlot, int>();
+                int atkZero = RoleStatService.Instance.Recalculate(role).PhysicalAttack;
+                result.Check(atkZero == atkNaked, "pm2.zeroEnhance=" + atkZero + "/" + atkNaked);
+            }
+            catch (System.Exception e)
+            {
+                result.Fail(e.ToString());
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.Equips = oldEquips;
+                role.EquipEnhance = oldEnhance;
+                role.EquipStars = oldStars;
                 role.PartnerSlots = oldSlots;
                 if (role.BagData != null && oldBag != null)
                     role.BagData.ItemList = oldBag;

@@ -104,6 +104,8 @@ namespace HotUpdateScripts.LocalNet
             // 魂石（原服 refreshStats 里 allGems / gemStatus 那两段）。
             // 必须放在 ApplyPercentages 之前，且生命百分比要在「装备+伙伴」都加完之后算基数。
             AddGemstones(role, values);
+            // 强化大师 / 升星大师（原服紧跟魂石大师之后，两段都是「全身最低 + 最高达标档」）。
+            AddEquipmentMaster(role, values);
             // 被动技能属性。必须在 ApplyPercentages 之前，
             // 否则 [勇猛] 这类 +5% 攻击/防御的被动不会生效。
             AddPassiveSkills(role, values);
@@ -594,6 +596,93 @@ namespace HotUpdateScripts.LocalNet
                     }
                 }
                 break;
+            }
+        }
+
+        /// <summary>
+        /// 强化大师 / 升星大师，对齐原服 refreshStats 的这两段：
+        ///
+        ///   var maxEnhance, maxStars int32
+        ///   maxEnhance = math.MaxInt32
+        ///   maxStars   = math.MaxInt32
+        ///   for slot, equip := range p.equips {                    // 固定 [MaxEquipSlot]Slot 数组
+        ///       if slot &lt;= INVALID || slot &gt;= MaxEquipSlot { continue }
+        ///       if equip.Enhance &lt; maxEnhance { maxEnhance = equip.Enhance }
+        ///       if equip.Stars   &lt; maxStars   { maxStars   = equip.Stars }
+        ///   }
+        ///   for _, equipmaster := range global.EquipMasterCfg {
+        ///       if equipmaster.Category == Enhance &amp;&amp; maxEnhance &gt;= equipmaster.Limit { enhanceCfg = equipmaster }
+        ///       if equipmaster.Category == Stars   &amp;&amp; maxStars   &gt;= equipmaster.Limit { starCfg    = equipmaster }
+        ///   }
+        ///
+        /// ⚠️ 关键词是「**全身最低**」：原服遍历的是固定 13 项数组，
+        ///    没穿的槽位 Enhance/Stars 都是 0，所以**少穿一件、或某件没强化，大师就不生效**。
+        ///    客户端 UI 也是同一套算法（RoleM.GetEquipReinforce / UIEquipMaster 伙伴分支都是
+        ///    `for i = 1; i &lt; MaxEquipSlot; i++` 取 Math.Min），所以这里必须遍历 1..12
+        ///    并用 GetEquipEnhance/GetEquipStars（空槽返回 0），不能只遍历「已穿戴的部位」。
+        ///
+        /// 之前本地只移植了魂石大师、漏了这两段（2026-10-28 补）。
+        /// </summary>
+        private static void AddEquipmentMaster(LocalRole role, Dictionary<Attribute, int> values)
+        {
+            if (role == null || values == null)
+                return;
+
+            int minEnhance = int.MaxValue;
+            int minStars = int.MaxValue;
+            for (int i = (int)EquipSlot.INVALID_EquipSlot + 1; i < (int)EquipSlot.MaxEquipSlot; i++)
+            {
+                int enhance = role.GetEquipEnhance((EquipSlot)i);
+                int stars = role.GetEquipStars((EquipSlot)i);
+                if (enhance < minEnhance)
+                    minEnhance = enhance;
+                if (stars < minStars)
+                    minStars = stars;
+            }
+            if (minEnhance == int.MaxValue)
+                minEnhance = 0;
+            if (minStars == int.MaxValue)
+                minStars = 0;
+
+            AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.Reinforce, minEnhance);
+            AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.UpStar, minStars);
+        }
+
+        /// <summary>
+        /// 按 Category + Limit 取**最高达标档**并累加其属性。
+        /// 原服是「遍历时不断覆盖 enhanceCfg」，配置按 UUID/Limit 升序，等价于取最后一个满足的档。
+        ///
+        /// 玩家侧（强化/升星大师）和伙伴侧（PartnerService.AddPartnerEquipStats）共用这一份。
+        /// </summary>
+        public static void AddEquipMasterByLimit(Dictionary<Attribute, int> values,
+            CFG_EquipMaster.CategoryClass category, int achieved)
+        {
+            if (values == null || achieved <= 0)
+                return;
+
+            List<CFGItem_EquipMaster> masters;
+            try { masters = CFG_EquipMaster.GetMastersByCatedory(category); }
+            catch { masters = null; }
+            if (masters == null || masters.Count == 0)
+                return;
+
+            CFGItem_EquipMaster best = null;
+            for (int i = 0; i < masters.Count; i++)
+            {
+                CFGItem_EquipMaster cfg = masters[i];
+                if (cfg == null || cfg.Limit > achieved)
+                    continue;
+                if (best == null || cfg.Limit > best.Limit)
+                    best = cfg;
+            }
+            if (best == null || best.Attribute == null)
+                return;
+
+            for (int a = 0; a < best.Attribute.Length; a++)
+            {
+                // struct 数组元素先拷局部变量再读字段（ILRuntime）
+                CFGItem_EquipMaster.AttributeItem attr = best.Attribute[a];
+                Add(values, (Attribute)attr.key, attr.value);
             }
         }
 

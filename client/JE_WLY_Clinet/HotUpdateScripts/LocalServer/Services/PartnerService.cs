@@ -1409,9 +1409,9 @@ namespace HotUpdateScripts.LocalNet
 
             // 魂石大师：与玩家侧共用同一套判定（RoleStatService.AddGemstoneMaster）
             RoleStatService.AddGemstoneMaster(values, allGemLevels);
-            // 强化大师 / 升星大师：取全身最低强化等级、最低星级对应的最高达标档
-            AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.Reinforce, minEnhance);
-            AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.UpStar, minStars);
+            // 强化大师 / 升星大师：同上，共用 RoleStatService.AddEquipMasterByLimit
+            RoleStatService.AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.Reinforce, minEnhance);
+            RoleStatService.AddEquipMasterByLimit(values, CFG_EquipMaster.CategoryClass.UpStar, minStars);
         }
 
         /// <summary>
@@ -1480,44 +1480,6 @@ namespace HotUpdateScripts.LocalNet
                         AddValue(values, (Attribute)attr.key, attr.value);
                     }
                 }
-            }
-        }
-
-        /// <summary>
-        /// 强化大师 / 升星大师：在 EquipMaster 里筛出同 Category 且 Limit &lt;= achieved 的
-        /// **最高一档**（Limit 最大者），把它的属性加上。
-        ///
-        /// 原服用「遍历时不断覆盖 enhanceCfg」，而配置按 UUID/Limit 升序排列，
-        /// 等价于取最后一个满足条件的档位 —— 也就是这里取 Limit 最大的那个。
-        /// </summary>
-        private static void AddEquipMasterByLimit(Dictionary<Attribute, int> values,
-            CFG_EquipMaster.CategoryClass category, int achieved)
-        {
-            if (values == null || achieved <= 0)
-                return;
-
-            List<CFGItem_EquipMaster> masters;
-            try { masters = CFG_EquipMaster.GetMastersByCatedory(category); }
-            catch { masters = null; }
-            if (masters == null || masters.Count == 0)
-                return;
-
-            CFGItem_EquipMaster best = null;
-            for (int i = 0; i < masters.Count; i++)
-            {
-                CFGItem_EquipMaster cfg = masters[i];
-                if (cfg == null || cfg.Limit > achieved)
-                    continue;
-                if (best == null || cfg.Limit > best.Limit)
-                    best = cfg;
-            }
-            if (best == null || best.Attribute == null)
-                return;
-
-            for (int a = 0; a < best.Attribute.Length; a++)
-            {
-                CFGItem_EquipMaster.AttributeItem attr = best.Attribute[a];
-                AddValue(values, (Attribute)attr.key, attr.value);
             }
         }
 

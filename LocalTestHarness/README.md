@@ -84,6 +84,7 @@ partner_gem  伙伴魂石镶嵌：槽位独立 / 槽位数按伙伴等级 / 拆�
 partner_upgrade 伙伴装备强化升星：上限按伙伴等级 / 槽位进度存档
 partner_reset 伙伴合成 / 分解 / 洗练：碎片换整卡、按品质星级门槛重置并退料、免费 70% 与付费全额
 partner_master 伙伴装备四段套装：魂石自然加成 / 魂石大师 / 强化大师 / 升星大师
+player_master 玩家强化大师 / 升星大师：全槽最低强化等级与星级
 skill      技能自动学习 / 槽位
 skill_action 技能升级 / 进阶 / 换槽
 skill_advance 技能进阶：档位配置 / 材料校验 / 伤害加成

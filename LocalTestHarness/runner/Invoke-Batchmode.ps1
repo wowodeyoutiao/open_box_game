@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("all", "box", "box_guard", "equip", "save_box", "idle", "level", "mail", "bag_full", "skill", "skill_action", "recycle", "task", "task_reset", "battle", "home_afk", "partner", "boss", "tower", "exp_pool", "passive", "store", "skill_advance", "equip_enhance", "equip_star", "gem", "config_audit", "compose", "gem_all", "gem_dungeon", "daily_map", "guard_island", "relic", "relic_reward", "pet", "pet_up", "pet_award", "partner_item", "partner_equip", "partner_gem", "partner_upgrade", "partner_reset", "partner_master")]
+    [ValidateSet("all", "box", "box_guard", "equip", "save_box", "idle", "level", "mail", "bag_full", "skill", "skill_action", "recycle", "task", "task_reset", "battle", "home_afk", "partner", "boss", "tower", "exp_pool", "passive", "store", "skill_advance", "equip_enhance", "equip_star", "gem", "config_audit", "compose", "gem_all", "gem_dungeon", "daily_map", "guard_island", "relic", "relic_reward", "pet", "pet_up", "pet_award", "partner_item", "partner_equip", "partner_gem", "partner_upgrade", "partner_reset", "partner_master", "player_master")]
     [string]$Scenario = "all",
     # 跳过编译，复用 Hidden~ 里已有的 dll（dll 由外部先编好时用，例如受限环境里 cmd 被禁用）
     [switch]$SkipBuild
