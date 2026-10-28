@@ -138,6 +138,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunPetAward());
                 if (scenario == "all" || scenario == "partner_item")
                     cases.Add(RunPartnerItem());
+                if (scenario == "all" || scenario == "partner_equip")
+                    cases.Add(RunPartnerEquip());
                 if (scenario == "all" || scenario == "home_afk")
                     cases.Add(RunHomeAFKReset());
 
@@ -4057,6 +4059,212 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 伙伴**碎片**（Type = 7）走正常入包（它要靠 C2S_PartnerCompose 消耗）。
         /// 重复获得的整卡 → AddPartner 内部转碎片（ChipNum）。
         /// </summary>
+        /// <summary>
+        /// 伙伴装备（② 2026-10-28）：穿脱 / 校验用伙伴的 job+level / 槽位保留强化 / 防误分解 / 存档往返。
+        /// 用装备 101（武器，战士专属，lv1）：伙伴 1（哈迪曼）job 11 → %10 = 1，能穿；
+        /// 1001（武器 lv76）用来验证"等级不足按伙伴等级判，不看玩家等级"。
+        /// 伙伴属性会经 RoleStatService.AddPartnerStats 累加进玩家总战力，所以用 TotalCombat 验证生效。
+        /// </summary>
+        private static CaseResult RunPartnerEquip()
+        {
+            var result = new CaseResult("partner_equip");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            List<PartnerSlotInfo> oldSlots = role.PartnerSlots;
+            List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
+            try
+            {
+                BattleService.Instance.Exit();
+                // 干净的四空槽
+                role.PartnerSlots = new List<PartnerSlotInfo>();
+                PartnerService.Instance.EnsureSlots(role);
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+                role.BagData.ItemList = new List<ItemInfo>();
+
+                Func<int, long> bagUidOf = cfgId =>
+                {
+                    for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                    {
+                        if (role.BagData.ItemList[i] != null && role.BagData.ItemList[i].CfgId == cfgId)
+                            return role.BagData.ItemList[i].Uid;
+                    }
+                    return 0;
+                };
+
+                // 1) 槽位没伙伴 → 拒绝
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long weaponUid = bagUidOf(101);
+                var noPartner = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(noPartner != null && noPartner.Code != 0 && noPartner.Error == "该槽位没有伙伴",
+                    "pe.noPartner=" + (noPartner == null ? "null" : noPartner.Error));
+
+                // 2) 上阵伙伴 1（job 11 → %10 = 1，能穿战士装备）
+                //    槽位 1 要 20 级才解锁（config.xml openslot），先把等级抬到 40 保证 4 槽全开
+                role.Level = 40;
+                PartnerService.Instance.AddPartner(role, 1);
+                PartnerInfo testPartner = null;
+                for (int i = 0; i < role.Partners.Count; i++)
+                {
+                    if (role.Partners[i] != null && role.Partners[i].CfgId == 1)
+                    {
+                        testPartner = role.Partners[i];
+                        break;
+                    }
+                }
+                result.Check(testPartner != null, "pe.hasPartner=" + (testPartner == null ? "no" : "yes"));
+                long partnerUid = testPartner != null ? testPartner.Uid : 0;
+                CommonResponse combatOn = PartnerService.Instance.Combat(new PartnerCombatRequest
+                {
+                    SlotId = 1,
+                    PartnerUid = partnerUid,
+                });
+                PartnerSlotInfo slot = role.FindPartnerSlot(1);
+                result.Check(combatOn != null && combatOn.Code == 0
+                    && slot != null && slot.PartnerUid == partnerUid,
+                    "pe.onSlot=" + (combatOn == null ? "null" : combatOn.Code + "/" + combatOn.Error));
+
+                RoleStatService.Instance.RecalculateCurrent();
+                int combatBefore = role.TotalCombat;
+
+                var equip = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(equip != null && equip.Code == 0,
+                    "pe.equip=" + (equip == null ? "null" : equip.Code + "/" + equip.Error));
+
+                SlotInfo weaponSlotInfo = slot != null && slot.Equips != null && slot.Equips.Count > 1
+                    ? slot.Equips[1] : null;
+                result.Check(weaponSlotInfo != null && weaponSlotInfo.Item != null
+                    && weaponSlotInfo.Item.Uid == weaponUid,
+                    "pe.slotItem=" + (weaponSlotInfo == null || weaponSlotInfo.Item == null
+                        ? "null" : weaponSlotInfo.Item.CfgId));
+                result.Check(bagUidOf(101) == 0, "pe.leftBag=" + (bagUidOf(101) == 0 ? 0 : 1));
+
+                RoleStatService.Instance.RecalculateCurrent();
+                result.Check(role.TotalCombat > combatBefore,
+                    "pe.combat=" + role.TotalCombat + ">" + combatBefore);
+
+                // 3) 部位不匹配（101 是武器，穿到衣服位）
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long secondWeapon = bagUidOf(101);
+                var wrongSlot = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Clothes,
+                    ItemUid = secondWeapon,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(wrongSlot != null && wrongSlot.Code != 0 && wrongSlot.Error == "装备部位不匹配",
+                    "pe.wrongSlot=" + (wrongSlot == null ? "null" : wrongSlot.Error));
+
+                // 4) 等级不足：按**伙伴**等级判（1001 需要 lv76）
+                ItemService.Instance.GrantReward(role, 1001, 1);
+                long highLevel = bagUidOf(1001);
+                var levelBlocked = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = highLevel,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(levelBlocked != null && levelBlocked.Code != 0
+                    && levelBlocked.Error == "伙伴等级不足，无法穿戴",
+                    "pe.levelLimit=" + (levelBlocked == null ? "null" : levelBlocked.Error));
+
+                // 5) 同一件装备重复穿戴被拒
+                var dup = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(dup != null && dup.Code != 0 && dup.Error == "该装备已被穿戴",
+                    "pe.dup=" + (dup == null ? "null" : dup.Error));
+
+                // 6) 伙伴身上的装备不能被分解
+                var breakIt = ItemService.Instance.ItemDisassembly(TCPClientMgr.ProtoSerialize(
+                    new ItemDisassemblyRequest { ItemUids = new long[] { weaponUid } })) as ItemDisassemblyResponse;
+                result.Check(breakIt != null && breakIt.Code == -3,
+                    "pe.noBreak=" + (breakIt == null ? "null" : breakIt.Code));
+                result.Check(slot.Equips[1].Item != null && slot.Equips[1].Item.Uid == weaponUid,
+                    "pe.noBreakKeep=" + (slot.Equips[1].Item == null ? "gone" : "kept"));
+
+                // 7) 存档往返：Equips 要持久化
+                SaveDocument doc = SaveDocumentMapper.FromLocalData(LocalData.Instance);
+                string json = JEngine.LitJson.JsonMapper.ToJson(doc);
+                SaveDocument parsed = JEngine.LitJson.JsonMapper.ToObject<SaveDocument>(json);
+                List<LocalRole> restored = SaveDocumentMapper.ToLocalRoles(parsed);
+                bool savedEquip = false;
+                if (restored != null && restored.Count > 0)
+                {
+                    restored[0].EnsurePartnerEquipSlots();
+                    PartnerSlotInfo restoredSlot = restored[0].FindPartnerSlot(1);
+                    savedEquip = restoredSlot != null && restoredSlot.Equips != null
+                        && restoredSlot.Equips.Count > 1 && restoredSlot.Equips[1].Item != null
+                        && restoredSlot.Equips[1].Item.Uid == weaponUid;
+                }
+                result.Check(savedEquip, "pe.save=" + savedEquip);
+
+                // 8) 脱下回背包
+                var takeOff = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
+                {
+                    OpType = 2,
+                    Slot = EquipSlot.Weapon,
+                    ItemUid = weaponUid,
+                    PartnerSlotId = 1,
+                })) as ChangeEquipResponse;
+                result.Check(takeOff != null && takeOff.Code == 0,
+                    "pe.takeOff=" + (takeOff == null ? "null" : takeOff.Code + "/" + takeOff.Error));
+                // 注意：这里不能用「背包里第一件 101」比对 —— 步骤 3 还往包里塞了一件 101，
+                // 必须按 uid 精确找。
+                bool backToBag = false;
+                for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                {
+                    ItemInfo bagItem = role.BagData.ItemList[i];
+                    if (bagItem != null && bagItem.Uid == weaponUid)
+                    {
+                        backToBag = true;
+                        break;
+                    }
+                }
+                result.Check(slot.Equips[1].Item == null && backToBag,
+                    "pe.takeOffBag=" + (backToBag ? "back" : "missing"));
+            }
+            catch (Exception e)
+            {
+                result.Fail(e.ToString());
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.PartnerSlots = oldSlots;
+                if (role.BagData != null && oldBag != null)
+                    role.BagData.ItemList = oldBag;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         private static CaseResult RunPartnerItem()
         {
             var result = new CaseResult("partner_item");

@@ -266,6 +266,22 @@ namespace HotUpdateScripts.LocalNet
     {
         public int SlotId;
         public long PartnerUid;
+        /// <summary>伙伴身上的装备（槽位 1..12）。旧档没有这段，读出来是空列表。</summary>
+        public List<PartnerEquipSaveV1> Equips = new List<PartnerEquipSaveV1>();
+    }
+
+    /// <summary>
+    /// 伙伴装备槽。强化/升星/宝石都存在**槽位**上（换装备不清零），
+    /// 与玩家 EquipEnhance/EquipStar/EquipGem 的语义一致，对齐原服 `Slot{ItemId,Stars,Enhance,Quality,Gemstone}`。
+    /// </summary>
+    [Serializable]
+    public sealed class PartnerEquipSaveV1
+    {
+        public int Slot;                 // EquipSlot 1..12
+        public ItemSaveV1 Item;          // null = 该部位空着
+        public int Enhance;
+        public int Stars;
+        public List<int> Gemstone = new List<int>();
     }
 
     [Serializable]
@@ -531,11 +547,37 @@ namespace HotUpdateScripts.LocalNet
                     PartnerSlotInfo slot = role.PartnerSlots[i];
                     if (slot == null)
                         continue;
-                    save.PartnerSlots.Add(new PartnerSlotSaveV1
+                    var slotSave = new PartnerSlotSaveV1
                     {
                         SlotId = slot.SlotId,
                         PartnerUid = slot.PartnerUid,
-                    });
+                    };
+                    if (slot.Equips != null)
+                    {
+                        for (int s = 0; s < slot.Equips.Count; s++)
+                        {
+                            SlotInfo equip = slot.Equips[s];
+                            if (equip == null)
+                                continue;
+                            // 空槽且没有任何强化/升星/宝石进度就不用落盘，读档时补位
+                            bool hasGem = equip.Gemstone != null && equip.Gemstone.Length > 0;
+                            if (equip.Item == null && equip.Enhance == 0 && equip.Stars == 0 && !hasGem)
+                                continue;
+                            var equipSave = new PartnerEquipSaveV1
+                            {
+                                Slot = s,
+                                Enhance = equip.Enhance,
+                                Stars = equip.Stars,
+                                Gemstone = new List<int>(),
+                            };
+                            if (equip.Item != null)
+                                equipSave.Item = ToItemSave(equip.Item);
+                            if (hasGem)
+                                equipSave.Gemstone.AddRange(equip.Gemstone);
+                            slotSave.Equips.Add(equipSave);
+                        }
+                    }
+                    save.PartnerSlots.Add(slotSave);
                 }
             }
 
@@ -872,6 +914,29 @@ namespace HotUpdateScripts.LocalNet
                         PartnerUid = slot.PartnerUid,
                         Equips = new List<SlotInfo>(),
                     });
+                    // 伙伴装备：先补满 13 个空槽再按 Slot 回填
+                    PartnerSlotInfo restored = role.PartnerSlots[role.PartnerSlots.Count - 1];
+                    role.EnsurePartnerEquipSlots();
+                    if (slot.Equips != null)
+                    {
+                        for (int e = 0; e < slot.Equips.Count; e++)
+                        {
+                            PartnerEquipSaveV1 equipSave = slot.Equips[e];
+                            if (equipSave == null)
+                                continue;
+                            if (equipSave.Slot <= 0 || equipSave.Slot >= LocalRole.PartnerEquipSlotCount)
+                                continue;
+                            restored.Equips[equipSave.Slot] = new SlotInfo
+                            {
+                                Item = equipSave.Item == null ? null : ToItem(equipSave.Item),
+                                Enhance = equipSave.Enhance,
+                                Stars = equipSave.Stars,
+                                Gemstone = equipSave.Gemstone == null
+                                    ? new int[0]
+                                    : equipSave.Gemstone.ToArray(),
+                            };
+                        }
+                    }
                 }
             }
 

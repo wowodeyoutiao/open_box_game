@@ -87,6 +87,78 @@ namespace HotUpdateScripts.LocalNet
             return true;
         }
 
+        /// <summary>
+        /// 伙伴装备校验。与原服 changeEquip 的 partnerSlotId != 0 分支一致：
+        /// 职业取 `partner.cfg.Job % 10`、等级取 `partner.level`（**不是玩家的**），性别不校验
+        /// （原服那段 Genderlimit 被注释掉了，伙伴本身没有性别字段）。
+        /// </summary>
+        public static bool TryValidatePartnerEquip(
+            ItemInfo item,
+            EquipSlot slot,
+            int partnerJob,
+            int partnerLevel,
+            out string error)
+        {
+            error = "";
+            if (item == null)
+            {
+                error = "装备不存在";
+                return false;
+            }
+
+            int slotValue = (int)slot;
+            if (slotValue <= (int)EquipSlot.INVALID_EquipSlot
+                || slotValue >= (int)EquipSlot.MaxEquipSlot)
+            {
+                error = "装备部位无效";
+                return false;
+            }
+
+            CFGItem_Item cfg;
+            try
+            {
+                cfg = CFG_Item.GetById(item.CfgId);
+            }
+            catch (System.Exception e)
+            {
+                error = "装备配置不存在";
+                Log.PrintWarning("[EquipRule] 伙伴装备配置读取失败 cfg=" + item.CfgId + " " + e.Message);
+                return false;
+            }
+            if (cfg == null || ToInt(cfg.Type) != (int)ItemType.EQUIPMENT)
+            {
+                error = "该物品不是装备";
+                return false;
+            }
+
+            if (ToInt(cfg.Equiptype) != slotValue)
+            {
+                error = "装备部位不匹配";
+                return false;
+            }
+
+            int occupyLimit = ToInt(cfg.Occupylimit);
+            if (occupyLimit != 0 && occupyLimit != partnerJob)
+            {
+                error = "伙伴职业不符，无法穿戴";
+                return false;
+            }
+
+            if (ToInt(cfg.Levellimit) > partnerLevel)
+            {
+                error = "伙伴等级不足，无法穿戴";
+                return false;
+            }
+
+            if (item.Equip == null)
+            {
+                error = "装备数据异常";
+                return false;
+            }
+
+            return true;
+        }
+
         public static bool TryValidateUnequip(
             LocalRole role,
             EquipSlot slot,

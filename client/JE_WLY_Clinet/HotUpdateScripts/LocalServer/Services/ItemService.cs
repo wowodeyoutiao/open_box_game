@@ -52,7 +52,7 @@ namespace HotUpdateScripts.LocalNet
                 return new ChangeEquipResponse { Code = -1, Error = "没有角色" };
 
             if (request.PartnerSlotId != 0)
-                return new ChangeEquipResponse { Code = -1, Error = "单机版暂不支持伙伴装备" };
+                return ChangePartnerEquip(role, request);
             if (role.Equips == null)
                 role.Equips = new Dictionary<EquipSlot, ItemInfo>();
             if (role.BagData == null)
@@ -132,6 +132,172 @@ namespace HotUpdateScripts.LocalNet
         }
 
         /// <summary>
+        /// 伙伴装备穿脱（对齐原服 changeEquip 的 partnerSlotId != 0 分支）。
+        ///
+        /// 三处与原服一致、容易做错的地方：
+        ///   ① 校验用**伙伴**的职业（cfg.Job % 10）和等级，不是玩家的；
+        ///   ② 强化/升星/宝石挂在**槽位**上，换装备不清零（原服 Slot 结构就是这样）；
+        ///   ③ 同一件装备不能同时穿在玩家和伙伴身上（原服 hasEquipment 两边都查）。
+        /// </summary>
+        private static ChangeEquipResponse ChangePartnerEquip(LocalRole role, ChangeEquipRequest request)
+        {
+            var fail = new ChangeEquipResponse
+            {
+                Code = -1,
+                Error = "",
+                OpType = request.OpType,
+                Slot = request.Slot,
+                PartnerSlotId = request.PartnerSlotId,
+            };
+
+            if (!PartnerService.IsValidSlot(request.PartnerSlotId))
+            {
+                fail.Error = "伙伴槽位不合法";
+                return fail;
+            }
+
+            role.EnsurePartnerEquipSlots();
+            PartnerSlotInfo partnerSlot = role.FindPartnerSlot(request.PartnerSlotId);
+            if (partnerSlot == null || partnerSlot.PartnerUid <= 0)
+            {
+                fail.Error = "该槽位没有伙伴";
+                return fail;
+            }
+
+            PartnerInfo partner = null;
+            if (role.Partners != null)
+            {
+                for (int i = 0; i < role.Partners.Count; i++)
+                {
+                    if (role.Partners[i] != null && role.Partners[i].Uid == partnerSlot.PartnerUid)
+                    {
+                        partner = role.Partners[i];
+                        break;
+                    }
+                }
+            }
+            if (partner == null)
+            {
+                fail.Error = "伙伴不存在";
+                return fail;
+            }
+
+            int partnerJob = 0;
+            int partnerLevel = partner.Level > 0 ? partner.Level : 1;
+            try
+            {
+                CFGItem_Partner partnerCfg = CFG_Partner.GetById(partner.CfgId);
+                if (partnerCfg != null)
+                    partnerJob = EquipRuleService.ToInt(partnerCfg.job) % 10;
+            }
+            catch { partnerJob = 0; }
+
+            int slotIndex = (int)request.Slot;
+            if (slotIndex <= (int)EquipSlot.INVALID_EquipSlot
+                || slotIndex >= (int)EquipSlot.MaxEquipSlot)
+            {
+                fail.Error = "装备部位无效";
+                return fail;
+            }
+
+            SlotInfo target = partnerSlot.Equips[slotIndex];
+            if (target == null)
+            {
+                target = new SlotInfo { Item = null, Gemstone = new int[0] };
+                partnerSlot.Equips[slotIndex] = target;
+            }
+
+            bool isOn = request.OpType == 1;
+            ItemInfo item = null;
+            ItemInfo oldItem = target.Item;
+            bool fromBox = false;
+
+            if (isOn)
+            {
+                // 「已被穿戴」必须先判：装备穿上后就不在背包里了，
+                // 先查背包会误报"背包和宝箱里都没有该装备"（原服是先 getItemByUid 再 isOnEquip）。
+                if (IsEquipped(role, request.ItemUid))
+                {
+                    fail.Error = "该装备已被穿戴";
+                    return fail;
+                }
+
+                item = FindInBag(role.BagData, request.ItemUid);
+                if (item == null)
+                {
+                    item = FindInBox(role, request.ItemUid);
+                    fromBox = item != null;
+                }
+                if (item == null)
+                {
+                    fail.Error = "背包和宝箱结果里都没有该装备";
+                    return fail;
+                }
+
+                string validateError;
+                if (!EquipRuleService.TryValidatePartnerEquip(
+                        item, request.Slot, partnerJob, partnerLevel, out validateError))
+                {
+                    fail.Code = 3;
+                    fail.Error = validateError;
+                    return fail;
+                }
+
+                if (fromBox)
+                {
+                    role.BoxOpenItems.Remove(item);
+                    if (oldItem != null)
+                        role.BoxOpenItems.Add(oldItem);
+                }
+                else
+                {
+                    role.BagData.ItemList.Remove(item);
+                    if (oldItem != null)
+                        role.BagData.ItemList.Add(oldItem);
+                }
+                target.Item = item;
+            }
+            else
+            {
+                if (oldItem == null)
+                {
+                    fail.Error = "该部位没有装备";
+                    return fail;
+                }
+                string bagError;
+                if (!EquipRuleService.CanAddToBag(role, oldItem, out bagError))
+                {
+                    fail.Code = 2;
+                    fail.Error = bagError;
+                    return fail;
+                }
+                role.BagData.ItemList.Add(oldItem);
+                target.Item = null;
+            }
+
+            RoleStatService.Instance.RecalculateCurrent();
+            SaveCoordinator.Instance.SaveNow();
+
+            Log.Print("[ItemService] 伙伴装备" + (isOn ? "穿戴" : "脱下")
+                + " partnerUid=" + partnerSlot.PartnerUid + " slot=" + slotIndex);
+
+            LocalPusher.Instance.PushPartnerSlot();
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushStatsNow();
+
+            return new ChangeEquipResponse
+            {
+                Code = 0,
+                Error = "",
+                OpType = request.OpType,
+                Slot = request.Slot,
+                Item = item ?? oldItem ?? new ItemInfo(),
+                OldItem = oldItem ?? new ItemInfo(),
+                PartnerSlotId = request.PartnerSlotId,
+            };
+        }
+
+        /// <summary>
         /// 本地一键最优装备。只比较背包中合法装备与当前部位装备的装备评分，
         /// 所有替换完成后统一重算、保存和推送一次。
         /// </summary>
@@ -163,11 +329,13 @@ namespace HotUpdateScripts.LocalNet
                     Error = "没有角色",
                     RequestCmdId = (uint)CmdId.C2S_EquipBest,
                 };
-            if (request.Type != ObjectType.PLAYER || request.PartnerSlotId != 0)
+            if (request.PartnerSlotId != 0)
+                return EquipBestPartner(role, request);
+            if (request.Type != ObjectType.PLAYER)
                 return new CommonResponse
                 {
                     Code = -1,
-                    Error = "单机版暂不支持伙伴一键装备",
+                    Error = "一键装备对象类型不合法",
                     RequestCmdId = (uint)CmdId.C2S_EquipBest,
                 };
             if (role.Equips == null)
@@ -284,6 +452,133 @@ namespace HotUpdateScripts.LocalNet
                 Error = "",
                 RequestCmdId = (uint)CmdId.C2S_EquipBest,
             };
+        }
+
+        /// <summary>
+        /// 伙伴一键最优装备（对齐原服 equipBest 的 partnerSlotID 分支）：
+        /// 逐部位挑战力最高的合法装备，比当前槽内装备高就换上。
+        /// 每件都走 ChangePartnerEquip，校验/换装/推送逻辑只维护一份。
+        /// </summary>
+        private static CommonResponse EquipBestPartner(LocalRole role, EquipBestRequest request)
+        {
+            var resp = new CommonResponse
+            {
+                Code = 0,
+                Error = "",
+                RequestCmdId = (uint)CmdId.C2S_EquipBest,
+            };
+            if (!PartnerService.IsValidSlot(request.PartnerSlotId))
+            {
+                resp.Code = -1;
+                resp.Error = "伙伴槽位不合法";
+                return resp;
+            }
+
+            role.EnsurePartnerEquipSlots();
+            PartnerSlotInfo slot = role.FindPartnerSlot(request.PartnerSlotId);
+            if (slot == null || slot.PartnerUid <= 0)
+            {
+                resp.Code = -1;
+                resp.Error = "该槽位没有伙伴";
+                return resp;
+            }
+
+            PartnerInfo partner = null;
+            if (role.Partners != null)
+            {
+                for (int i = 0; i < role.Partners.Count; i++)
+                {
+                    if (role.Partners[i] != null && role.Partners[i].Uid == slot.PartnerUid)
+                    {
+                        partner = role.Partners[i];
+                        break;
+                    }
+                }
+            }
+            if (partner == null)
+            {
+                resp.Code = -1;
+                resp.Error = "伙伴不存在";
+                return resp;
+            }
+
+            int partnerJob = 0;
+            int partnerLevel = partner.Level > 0 ? partner.Level : 1;
+            try
+            {
+                CFGItem_Partner partnerCfg = CFG_Partner.GetById(partner.CfgId);
+                if (partnerCfg != null)
+                    partnerJob = EquipRuleService.ToInt(partnerCfg.job) % 10;
+            }
+            catch { partnerJob = 0; }
+
+            if (role.BagData == null || role.BagData.ItemList == null)
+                return resp;
+
+            int changed = 0;
+            for (int i = 1; i < LocalRole.PartnerEquipSlotCount; i++)
+            {
+                EquipSlot equipSlot = (EquipSlot)i;
+                ItemInfo best = null;
+                int bestPower = 0;
+                var candidates = new List<ItemInfo>(role.BagData.ItemList);
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    ItemInfo candidate = candidates[c];
+                    if (candidate == null)
+                        continue;
+
+                    CFGItem_Item cfg;
+                    try { cfg = CFG_Item.GetById(candidate.CfgId); }
+                    catch { continue; }
+                    if (cfg == null || EquipRuleService.ToInt(cfg.Type) != (int)ItemType.EQUIPMENT)
+                        continue;
+                    if (EquipRuleService.ToInt(cfg.Equiptype) != i)
+                        continue;
+                    if (IsEquipped(role, candidate.Uid))
+                        continue;
+
+                    string error;
+                    if (!EquipRuleService.TryValidatePartnerEquip(
+                            candidate, equipSlot, partnerJob, partnerLevel, out error))
+                        continue;
+
+                    int power;
+                    try { power = GameUtil.Instance.GetEquipPower(candidate, partnerJob); }
+                    catch { continue; }
+                    if (best == null || power > bestPower)
+                    {
+                        best = candidate;
+                        bestPower = power;
+                    }
+                }
+
+                if (best == null)
+                    continue;
+
+                int currentPower = 0;
+                SlotInfo current = i < slot.Equips.Count ? slot.Equips[i] : null;
+                if (current != null && current.Item != null)
+                {
+                    try { currentPower = GameUtil.Instance.GetEquipPower(current.Item, partnerJob); }
+                    catch { currentPower = 0; }
+                }
+                if (bestPower <= currentPower)
+                    continue;
+
+                ChangeEquipResponse equipped = ChangePartnerEquip(role, new ChangeEquipRequest
+                {
+                    OpType = 1,
+                    Slot = equipSlot,
+                    ItemUid = best.Uid,
+                    PartnerSlotId = request.PartnerSlotId,
+                });
+                if (equipped != null && equipped.Code == 0)
+                    changed++;
+            }
+
+            Log.Print("[ItemService] 伙伴一键装备 partnerUid=" + slot.PartnerUid + " changed=" + changed);
+            return resp;
         }
 
         // ==================== 分解 / 回收 ====================
@@ -528,14 +823,36 @@ namespace HotUpdateScripts.LocalNet
             };
         }
 
+        /// <summary>
+        /// 该装备是否已被穿戴。**玩家和伙伴都要查** —— 对齐原服 hasEquipment：
+        /// 只查玩家会导致伙伴身上的装备能被分解/销毁，装备凭空消失。
+        /// </summary>
         private static bool IsEquipped(LocalRole role, long uid)
         {
-            if (role == null || role.Equips == null)
+            if (role == null)
                 return false;
-            foreach (KeyValuePair<EquipSlot, ItemInfo> kv in role.Equips)
+            if (role.Equips != null)
             {
-                if (kv.Value != null && kv.Value.Uid == uid)
-                    return true;
+                foreach (KeyValuePair<EquipSlot, ItemInfo> kv in role.Equips)
+                {
+                    if (kv.Value != null && kv.Value.Uid == uid)
+                        return true;
+                }
+            }
+            if (role.PartnerSlots != null)
+            {
+                for (int i = 0; i < role.PartnerSlots.Count; i++)
+                {
+                    PartnerSlotInfo slot = role.PartnerSlots[i];
+                    if (slot == null || slot.Equips == null)
+                        continue;
+                    for (int s = 0; s < slot.Equips.Count; s++)
+                    {
+                        SlotInfo equip = slot.Equips[s];
+                        if (equip != null && equip.Item != null && equip.Item.Uid == uid)
+                            return true;
+                    }
+                }
             }
             return false;
         }

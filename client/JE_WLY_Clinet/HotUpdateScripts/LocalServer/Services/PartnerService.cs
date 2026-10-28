@@ -97,12 +97,29 @@ namespace HotUpdateScripts.LocalNet
                 PartnerSlotInfo slot = role.PartnerSlots[i];
                 if (slot == null)
                     continue;
-                resp.List.Add(new PartnerSlotInfo
+                var info = new PartnerSlotInfo
                 {
                     SlotId = slot.SlotId,
                     PartnerUid = slot.PartnerUid,
                     Equips = new List<SlotInfo>(),
-                });
+                };
+                if (slot.Equips != null)
+                {
+                    for (int s = 0; s < slot.Equips.Count; s++)
+                    {
+                        SlotInfo equip = slot.Equips[s];
+                        info.Equips.Add(equip == null
+                            ? new SlotInfo { Gemstone = new int[0] }
+                            : new SlotInfo
+                            {
+                                Item = equip.Item,
+                                Enhance = equip.Enhance,
+                                Stars = equip.Stars,
+                                Gemstone = equip.Gemstone == null ? new int[0] : (int[])equip.Gemstone.Clone(),
+                            });
+                    }
+                }
+                resp.List.Add(info);
             }
             return resp;
         }
@@ -380,6 +397,9 @@ namespace HotUpdateScripts.LocalNet
                     Equips = new List<SlotInfo>(),
                 });
             }
+
+            // 伙伴装备位（1..12）：旧档/新槽都要补满
+            role.EnsurePartnerEquipSlots();
         }
 
         /// <summary>
@@ -572,6 +592,151 @@ namespace HotUpdateScripts.LocalNet
                     AddValue(values, (Attribute)attr.key, attr.value);
                 }
             }
+
+            // 装备（原服 refreshStats 的装备段）
+            AddPartnerEquipStats(values, partner);
+        }
+
+        /// <summary>
+        /// 伙伴装备属性，对齐原服 Partner.refreshStats 的装备段：
+        ///   攻/防/生命基础值 × **实例**品质系数；其余配置属性（命中/闪避/暴击/韧性/增伤/生命%）
+        ///   取原值；槽位强化（uuid = job%10*1000 + Enhance）与升星（job%10*100 + Stars）
+        ///   取配置里 slot 匹配的项；实例极品属性直接加。
+        /// 暂不含：宝石属性、宝石大师、强化大师、升星大师（后续 B 阶段补）。
+        /// </summary>
+        private void AddPartnerEquipStats(Dictionary<Attribute, int> values, PartnerInfo partner)
+        {
+            if (values == null || partner == null)
+                return;
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+                return;
+            PartnerSlotInfo slotInfo = role.FindPartnerSlotByUid(partner.Uid);
+            if (slotInfo == null || slotInfo.Equips == null)
+                return;
+
+            CFGItem_Partner partnerCfg = GetPartnerCfg(partner.CfgId);
+            int partnerJob = partnerCfg == null ? 0 : PartnerToInt(partnerCfg.job) % 10;
+
+            for (int slot = 1; slot < LocalRole.PartnerEquipSlotCount && slot < slotInfo.Equips.Count; slot++)
+            {
+                SlotInfo equip = slotInfo.Equips[slot];
+                if (equip == null || equip.Item == null)
+                    continue;
+
+                CFGItem_Item cfg;
+                try { cfg = CFG_Item.GetById(equip.Item.CfgId); }
+                catch { continue; }
+                if (cfg == null)
+                    continue;
+
+                int itemQuality = equip.Item.Equip != null
+                    ? (int)equip.Item.Equip.Quality
+                    : (int)ItemQuality.WHITE;
+                float quality = GetEquipQualityCoef(itemQuality);
+
+                AddValue(values, Attribute.PHYSICAL_ATTACK, PartnerScale(cfg.Phyatk, quality));
+                AddValue(values, Attribute.MAGIC_ATTACK, PartnerScale(cfg.Magatk, quality));
+                AddValue(values, Attribute.PHYSICAL_DEFENSE, PartnerScale(cfg.Phydef, quality));
+                AddValue(values, Attribute.MAGIC_DEFENSE, PartnerScale(cfg.Magdef, quality));
+                AddValue(values, Attribute.MAX_HEALTH, PartnerScale(cfg.HP, quality));
+
+                AddValue(values, Attribute.HIT, PartnerToInt(cfg.Hit));
+                AddValue(values, Attribute.DODGE, PartnerToInt(cfg.Miss));
+                AddValue(values, Attribute.CRITICAL_STRIKE, PartnerToInt(cfg.Crit));
+                AddValue(values, Attribute.TOUGHNESS, PartnerToInt(cfg.Decrit));
+                AddValue(values, Attribute.PVP_DAMAGE_PERCENTAGE, PartnerToInt(cfg.PVPdamage));
+                AddValue(values, Attribute.PVE_DAMAGE_PERCENTAGE, PartnerToInt(cfg.PVEdamage));
+                AddValue(values, Attribute.HEALTH_PERCENTAGE, PartnerToInt(cfg.HPPercent));
+
+                // 槽位强化属性
+                if (equip.Enhance > 0)
+                {
+                    CFGItem_EquipStrengthen enhanceCfg = null;
+                    try { enhanceCfg = CFG_EquipStrengthen.GetByJobAndLv(partnerJob, equip.Enhance); }
+                    catch { enhanceCfg = null; }
+                    if (enhanceCfg != null && enhanceCfg.Attribute != null)
+                    {
+                        float enhanceCoef = GetEnhanceQualityCoef(PartnerToInt(cfg.Quality));
+                        for (int e = 0; e < enhanceCfg.Attribute.Length; e++)
+                        {
+                            CFGItem_EquipStrengthen.Attribute_Item attr = enhanceCfg.Attribute[e];
+                            if (attr.slot != slot || attr.attribute <= 0)
+                                continue;
+                            AddValue(values, (Attribute)attr.attribute, (int)(attr.value * enhanceCoef));
+                        }
+                    }
+                }
+
+                // 槽位升星属性（配置里是百分比，原值加入）
+                if (equip.Stars > 0)
+                {
+                    CFGItem_EquipStar starCfg = null;
+                    try { starCfg = CFG_EquipStar.GetByJobAndLv(partnerJob, equip.Stars); }
+                    catch { starCfg = null; }
+                    if (starCfg != null && starCfg.Attribute != null)
+                    {
+                        for (int st = 0; st < starCfg.Attribute.Length; st++)
+                        {
+                            CFGItem_EquipStar.Attribute_Item attr = starCfg.Attribute[st];
+                            if (attr.slot != slot || attr.attribute <= 0)
+                                continue;
+                            AddValue(values, (Attribute)attr.attribute, attr.value);
+                        }
+                    }
+                }
+
+                // 实例极品属性
+                if (equip.Item.Equip != null && equip.Item.Equip.Attributes != null)
+                {
+                    for (int a = 0; a < equip.Item.Equip.Attributes.Count; a++)
+                    {
+                        Stats stat = equip.Item.Equip.Attributes[a];
+                        if (stat == null)
+                            continue;
+                        AddValue(values, stat.attr, stat.Num);
+                    }
+                }
+            }
+        }
+
+        private static int PartnerToInt(decimal? value)
+        {
+            return value == null ? 0 : (int)value.Value;
+        }
+
+        private static int PartnerScale(decimal? value, float coefficient)
+        {
+            if (value == null || value.Value == 0)
+                return 0;
+            return (int)System.Math.Round((double)value.Value * coefficient);
+        }
+
+        /// <summary>装备实例品质系数（config.xml 的 Equipquality）。</summary>
+        private static float GetEquipQualityCoef(int quality)
+        {
+            try
+            {
+                CFG_XMLConfig.XML_Config config = CFG_XMLConfig.xmlConfig;
+                if (config != null && config.EquipQualityDic != null && config.EquipQualityDic.ContainsKey(quality))
+                    return config.EquipQualityDic[quality]._value;
+            }
+            catch { }
+            return 1f;
+        }
+
+        /// <summary>强化属性要乘的品质系数（config.xml 的 Equipenhance）。</summary>
+        private static float GetEnhanceQualityCoef(int cfgQuality)
+        {
+            try
+            {
+                CFG_XMLConfig.XML_Config config = CFG_XMLConfig.xmlConfig;
+                if (config != null && config.EquipEnhanceDic != null
+                    && config.EquipEnhanceDic.ContainsKey(cfgQuality))
+                    return config.EquipEnhanceDic[cfgQuality];
+            }
+            catch { }
+            return 1f;
         }
 
         private static void AddValue(Dictionary<Attribute, int> values, Attribute attr, int num)

@@ -400,10 +400,50 @@ namespace HotUpdateScripts.LocalNet
         }
 
         /// <summary>伙伴槽位：底部「伙伴1-4」的占位</summary>
-        private void PushPartnerSlot()
+        /// <summary>
+        /// 伙伴槽位推送（上阵/下阵/伙伴穿脱装备后都要调）。
+        /// 必须带 Equips，否则客户端伙伴装备位永远是空的。
+        /// </summary>
+        public void PushPartnerSlot()
         {
-            var push = new PartnerSlotUpdatePush();
-            // 暂不填实际伙伴，保持空列表即可（UI 显示空槽）
+            var push = new PartnerSlotUpdatePush { List = new List<PartnerSlotInfo>() };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                JEvent.defaultEvent.Post(push);
+                return;
+            }
+
+            role.EnsurePartnerEquipSlots();
+            for (int i = 0; i < role.PartnerSlots.Count; i++)
+            {
+                PartnerSlotInfo slot = role.PartnerSlots[i];
+                if (slot == null)
+                    continue;
+                var info = new PartnerSlotInfo
+                {
+                    SlotId = slot.SlotId,
+                    PartnerUid = slot.PartnerUid,
+                    Equips = new List<SlotInfo>(),
+                };
+                if (slot.Equips != null)
+                {
+                    for (int s = 0; s < slot.Equips.Count; s++)
+                    {
+                        SlotInfo equip = slot.Equips[s];
+                        info.Equips.Add(equip == null
+                            ? new SlotInfo { Gemstone = new int[0] }
+                            : new SlotInfo
+                            {
+                                Item = equip.Item,
+                                Enhance = equip.Enhance,
+                                Stars = equip.Stars,
+                                Gemstone = equip.Gemstone == null ? new int[0] : (int[])equip.Gemstone.Clone(),
+                            });
+                    }
+                }
+                push.List.Add(info);
+            }
             JEvent.defaultEvent.Post(push);
         }
 

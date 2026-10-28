@@ -44,6 +44,64 @@ namespace HotUpdateScripts.LocalNet
         /// </summary>
         public List<PartnerSlotInfo> PartnerSlots = new List<PartnerSlotInfo>();
 
+        /// <summary>
+        /// 伙伴槽位上的装备位数量。槽位号与玩家一致（1..12，0 空置），
+        /// 对齐原服 `PartnerSlot.Equips [pb.EquipSlot_MaxEquipSlot]Slot`。
+        /// </summary>
+        public const int PartnerEquipSlotCount = 13;
+
+        /// <summary>把每个伙伴槽的 Equips 补成 13 个空槽（0 号空置）。旧档/新建槽都走这里。</summary>
+        public void EnsurePartnerEquipSlots()
+        {
+            if (PartnerSlots == null)
+                PartnerSlots = new List<PartnerSlotInfo>();
+            for (int i = 0; i < PartnerSlots.Count; i++)
+            {
+                PartnerSlotInfo slot = PartnerSlots[i];
+                if (slot == null)
+                    continue;
+                if (slot.Equips == null)
+                    slot.Equips = new List<SlotInfo>();
+                while (slot.Equips.Count < PartnerEquipSlotCount)
+                {
+                    slot.Equips.Add(new SlotInfo
+                    {
+                        Item = null,
+                        Enhance = 0,
+                        Stars = 0,
+                        Gemstone = new int[0],
+                    });
+                }
+            }
+        }
+
+        /// <summary>按槽位号（1..4）取伙伴槽，找不到返回 null。</summary>
+        public PartnerSlotInfo FindPartnerSlot(int slotId)
+        {
+            if (PartnerSlots == null)
+                return null;
+            for (int i = 0; i < PartnerSlots.Count; i++)
+            {
+                if (PartnerSlots[i] != null && PartnerSlots[i].SlotId == slotId)
+                    return PartnerSlots[i];
+            }
+            return null;
+        }
+
+        /// <summary>按伙伴 Uid 找它所在的槽（属性计算用），找不到返回 null。</summary>
+        public PartnerSlotInfo FindPartnerSlotByUid(long partnerUid)
+        {
+            if (partnerUid <= 0 || PartnerSlots == null)
+                return null;
+            for (int i = 0; i < PartnerSlots.Count; i++)
+            {
+                PartnerSlotInfo slot = PartnerSlots[i];
+                if (slot != null && slot.PartnerUid == partnerUid)
+                    return slot;
+            }
+            return null;
+        }
+
         // 战宠。原服 Player.pet 是 [PetsSlot_MaxPetsSlot=21] 定长数组：
         //   0 号 = 上阵位（只有它提供属性加成）
         //   1..20 = 包裹格（config.xml <petbag totlenum="20"/>）
