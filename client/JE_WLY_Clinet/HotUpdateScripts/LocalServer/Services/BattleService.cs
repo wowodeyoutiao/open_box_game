@@ -1305,6 +1305,156 @@ namespace HotUpdateScripts.LocalNet
             return res;
         }
 
+        /// <summary>
+        /// 副本扫荡（对齐原服 RoomManager.CopySweep → dailyMapCopySweep）。
+        ///
+        /// 只支持每日副本六类（经验/金币/强化石/书页/升星石/魂石）。
+        /// 首领/遗迹的 battleMapCopySweep 需要逐关通关记录，暂未实现。
+        ///
+        /// 校验：VIP 门槛（dailymap 的 viplimit）→ 次数。
+        /// 奖励：
+        ///   经验/金币  = baseValueNum × quickaccessScore / 10000 × level
+        ///   强化石/书页 = baseValueNum × quickaccessScore × level（原服这里没除 BaseRate，照抄）
+        ///   升星石/魂石 = quickaccess 的 stage 列表逐个发
+        /// </summary>
+        public object CopySweep(byte[] req)
+        {
+            CopySweepRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<CopySweepRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new CopySweepResponse { Code = -1, Error = "扫荡请求解析失败: " + e.Message };
+            }
+
+            var res = new CopySweepResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+            if (request == null || request.RoomId <= 0)
+            {
+                res.Code = -1;
+                res.Error = "参数错误";
+                return res;
+            }
+
+            CFGItem_Room room;
+            try { room = CFG_Room.GetById(request.RoomId); }
+            catch { room = null; }
+            if (room == null)
+            {
+                res.Code = -1;
+                res.Error = "副本配置不存在";
+                return res;
+            }
+
+            int roomType = (int)room.Roomtype;
+            if (!IsDailyMapRoom(roomType))
+            {
+                res.Code = -1;
+                res.Error = "该副本不支持扫荡";
+                return res;
+            }
+
+            CFG_XMLConfig.XML_Config.XML_DailyMap cfg = GetDailyMapConfig(roomType);
+            if (cfg == null)
+            {
+                res.Code = -1;
+                res.Error = "副本配置不存在";
+                return res;
+            }
+
+            // 原服：p.vip < GetDailyMapTime(roomtype).VipLimit
+            if (role.Vip < cfg.viplimit)
+            {
+                res.Code = -2;
+                res.Error = "VIP等级不足，无法扫荡";
+                return res;
+            }
+
+            // 原服：dailyMapTimes >= Num + VIP 加成
+            if (GetDailyMapTimes(role, roomType) <= 0)
+            {
+                res.Code = -3;
+                res.Error = "挑战次数不足";
+                return res;
+            }
+            ConsumeDailyMapTime(role, roomType);
+
+            // 结算奖励
+            var rewards = new Dictionary<int, long>();
+            switch ((CFG_Room.RoomType)roomType)
+            {
+                case CFG_Room.RoomType.EXP:
+                case CFG_Room.RoomType.Gold:
+                {
+                    // 经验/金币：baseValueNum × score / 10000 × level
+                    long num = (long)cfg.baseValueNum * cfg.quickaccessScore / 10000 * role.Level;
+                    if (num > 0 && cfg.baseValueID > 0)
+                        rewards[cfg.baseValueID] = num;
+                    break;
+                }
+                case CFG_Room.RoomType.QHS:
+                case CFG_Room.RoomType.SY:
+                {
+                    // 强化石/书页：baseValueNum × score × level（原服未除 BaseRate）
+                    long num = (long)cfg.baseValueNum * cfg.quickaccessScore * role.Level;
+                    if (num > 0 && cfg.baseValueID > 0)
+                        rewards[cfg.baseValueID] = num;
+                    break;
+                }
+                default:
+                {
+                    // 升星石/魂石：quickaccess 的 stage 列表
+                    if (cfg.quickAccessStages != null)
+                    {
+                        for (int i = 0; i < cfg.quickAccessStages.Length; i++)
+                        {
+                            CFG_XMLConfig.XML_Config.XML_DailyMap.QuickStageItem stage = cfg.quickAccessStages[i];
+                            if (stage == null || stage.id <= 0 || stage.num <= 0)
+                                continue;
+                            long exist;
+                            rewards[stage.id] = rewards.TryGetValue(stage.id, out exist) ? exist + stage.num : stage.num;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (rewards.Count == 0)
+            {
+                res.Code = -1;
+                res.Error = "扫荡奖励配置缺失";
+                return res;
+            }
+
+            var items = new List<ItemInfo>();
+            foreach (KeyValuePair<int, long> kv in rewards)
+            {
+                ItemService.Instance.GrantReward(role, kv.Key, kv.Value);
+                items.Add(new ItemInfo { CfgId = kv.Key, Num = (int)kv.Value });
+            }
+
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushUserBaseNow();
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushStatsNow();
+
+            LocalPusher.Instance.PushBattleResultNow(new GameResultBattlePush
+            {
+                RoomId = room.ID,
+                OverType = GameOverType.GameOverTypeCopySweep,
+                Items = items,
+            });
+            return res;
+        }
+
         /// <summary>取第 times 次复活的消耗配置；没有该档返回 null。</summary>
         private static CFG_XMLConfig.XML_Config.XML_Item_Revive GetReviveCost(int times)
         {

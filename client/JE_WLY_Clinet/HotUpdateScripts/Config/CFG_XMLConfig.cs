@@ -728,6 +728,19 @@ public class CFG_XMLConfig
             /// </summary>
             public int accommodationNum;
 
+            /// <summary>
+            /// 扫荡结算宝箱列表（升星石 / 魂石副本专用）：
+            /// config.xml 的 &lt;starstonemap&gt;&lt;quickaccess&gt;&lt;stage id num /&gt;。
+            /// 其它副本用 quickaccessScore 算数量，这里为空。
+            /// </summary>
+            public QuickStageItem[] quickAccessStages;
+
+            public class QuickStageItem
+            {
+                public int id;
+                public int num;
+            }
+
             public class ScoreItem 
             {
                 public string key;
@@ -1605,6 +1618,7 @@ public class CFG_XMLConfig
             baseValueID = GetIntXML(baseValueElement, "goldmap/basevalue", "id"),
             baseValueNum = GetIntXML(baseValueElement, "goldmap/basevalue", "num"),
             accommodationNum = GetIntXML(baseValueElement, "goldmap/accommodation", "num"),
+            quickaccessScore = GetIntXML(baseValueElement, "goldmap/quickaccess", "score"),
         });
 
         KeyNodes = xmlDoc.SelectNodes("/Config/dailymap/goldmap/score/stage");
@@ -1629,6 +1643,7 @@ public class CFG_XMLConfig
             baseValueID = GetIntXML(baseValueElement, "expmap/basevalue", "id"),
             baseValueNum = GetIntXML(baseValueElement, "expmap/basevalue", "num"),
             accommodationNum = GetIntXML(baseValueElement, "expmap/accommodation", "num"),
+            quickaccessScore = GetIntXML(baseValueElement, "expmap/quickaccess", "score"),
         });
 
         KeyNodes = xmlDoc.SelectNodes("/Config/dailymap/expmap/score/stage");
@@ -1678,6 +1693,7 @@ public class CFG_XMLConfig
             viplimit = GetIntXML(baseValueElement, "starstonemap/challengetime", "viplimit"),
             doubleaccessID = GetIntXML(baseValueElement, "starstonemap/doubleaccess", "id"),
             doubleaccessNum = GetIntXML(baseValueElement, "starstonemap/doubleaccess", "num"),
+            quickAccessStages = ParseQuickAccessStages(xmlDoc, "starstonemap"),
         });
 
         _xmlConfig.DayRoomDic.Add(CFG_Room.RoomType.HS, new XML_Config.XML_DailyMap
@@ -1687,6 +1703,7 @@ public class CFG_XMLConfig
             viplimit = GetIntXML(baseValueElement, "soulstonemap/challengetime", "viplimit"),
             doubleaccessID = GetIntXML(baseValueElement, "soulstonemap/doubleaccess", "id"),
             doubleaccessNum = GetIntXML(baseValueElement, "soulstonemap/doubleaccess", "num"),
+            quickAccessStages = ParseQuickAccessStages(xmlDoc, "soulstonemap"),
         });
 
         KeyNodes = xmlDoc.SelectNodes("/Config/partener/forge/charge");
@@ -1878,6 +1895,30 @@ public class CFG_XMLConfig
     private static int GetIntXML(XmlElement root, string keyFirst, string keySecound)
     {
         return int.Parse(root.SelectSingleNode($"{keyFirst}[@{keySecound}]").Attributes[$"{keySecound}"].Value);
+    }
+
+    /// <summary>
+    /// 解析升星石/魂石副本的扫荡结算宝箱：
+    /// &lt;starstonemap&gt;&lt;quickaccess&gt;&lt;stage id num /&gt;（soulstonemap 同理）。
+    /// 没有配置时返回空数组，调用方按空处理。
+    /// </summary>
+    private static XML_Config.XML_DailyMap.QuickStageItem[] ParseQuickAccessStages(XmlDocument xmlDoc, string mapNode)
+    {
+        XmlNodeList nodes = xmlDoc.SelectNodes($"/Config/BaseValue/{mapNode}/quickaccess/stage");
+        if (nodes == null || nodes.Count == 0)
+            return new XML_Config.XML_DailyMap.QuickStageItem[0];
+
+        var result = new XML_Config.XML_DailyMap.QuickStageItem[nodes.Count];
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            XmlElement element = (XmlElement)nodes[i];
+            result[i] = new XML_Config.XML_DailyMap.QuickStageItem
+            {
+                id = GetIntAttr(element, "id"),
+                num = GetIntAttr(element, "num"),
+            };
+        }
+        return result;
     }
 
     /// <summary>

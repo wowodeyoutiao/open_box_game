@@ -135,6 +135,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunItemUse());
                 if (scenario == "all" || scenario == "revive")
                     cases.Add(RunRevive());
+                if (scenario == "all" || scenario == "sweep")
+                    cases.Add(RunCopySweep());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3102,6 +3104,100 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 副本扫荡：VIP 不足被拒 → 次数不足被拒 → 正常扫荡发奖并扣次数。
+        /// 对齐原服 dailyMapCopySweep。
+        /// </summary>
+        private static CaseResult RunCopySweep()
+        {
+            var result = new CaseResult("sweep");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            int oldVip = role.Vip;
+            long oldCoin = role.Coin;
+            int oldResetDay = role.DailyMapResetDay;
+            Dictionary<int, int> oldTimes = role.DailyMapTimes;
+            try
+            {
+                role.Level = 45;
+                role.Coin = 0;
+                role.DailyMapResetDay = 0;
+                role.DailyMapTimes = new Dictionary<int, int>();
+
+                // 金币副本（room 201）：viplimit=3、basevalue 50000、quickaccess 9500
+                const int goldRoom = 201;
+                int goldType = (int)CFG_Room.RoomType.Gold;
+
+                // 1) VIP 0 < viplimit 3 → -2
+                role.Vip = 0;
+                object raw0 = BattleService.Instance.CopySweep(TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                {
+                    RoomId = goldRoom,
+                    SweepTimes = 1,
+                }));
+                var r0 = raw0 as CopySweepResponse;
+                result.Check(r0 != null && r0.Code == -2,
+                    "sweep.vipLow=" + (r0 == null ? "null" : r0.Code + "/" + r0.Error));
+
+                // 2) VIP 够但次数为 0 → -3
+                //    先让 EnsureDailyMapTimes 把「重置日」对齐到今天，
+                //    否则下一次 GetDailyMapTimes 会判定为跨天并补满次数。
+                role.Vip = 5;
+                BattleService.Instance.GetDailyMapTimes(role, goldType);
+                role.DailyMapTimes[goldType] = 0;
+                object raw1 = BattleService.Instance.CopySweep(TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                {
+                    RoomId = goldRoom,
+                    SweepTimes = 1,
+                }));
+                var r1 = raw1 as CopySweepResponse;
+                result.Check(r1 != null && r1.Code == -3,
+                    "sweep.noTimes=" + (r1 == null ? "null" : r1.Code + "/" + r1.Error));
+
+                // 3) 正常扫荡：50000 × 9500 / 10000 × 45 = 2,137,500 金币，次数 -1
+                role.DailyMapTimes[goldType] = 2;
+                object raw2 = BattleService.Instance.CopySweep(TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                {
+                    RoomId = goldRoom,
+                    SweepTimes = 1,
+                }));
+                var r2 = raw2 as CopySweepResponse;
+                result.Check(r2 != null && r2.Code == 0,
+                    "sweep.ok=" + (r2 == null ? "null" : r2.Code + "/" + r2.Error));
+                result.Check(role.Coin == 2137500, "sweep.coin=" + role.Coin);
+                int leftTimes;
+                role.DailyMapTimes.TryGetValue(goldType, out leftTimes);
+                result.Check(leftTimes == 1, "sweep.times=" + leftTimes);
+
+                // 4) 非每日副本（战役 600）不支持扫荡
+                object raw3 = BattleService.Instance.CopySweep(TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                {
+                    RoomId = 600,
+                    SweepTimes = 1,
+                }));
+                var r3 = raw3 as CopySweepResponse;
+                result.Check(r3 != null && r3.Code == -1,
+                    "sweep.wrongRoom=" + (r3 == null ? "null" : r3.Code));
+            }
+            finally
+            {
+                role.Vip = oldVip;
+                role.Coin = oldCoin;
+                role.DailyMapResetDay = oldResetDay;
+                role.DailyMapTimes = oldTimes;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 复活：不在战斗被拒 → 未死亡被拒 → 死亡后复活成功（扣钻石、回满血、次数递增）。
         /// 对齐原服 RoomManager.Revive。

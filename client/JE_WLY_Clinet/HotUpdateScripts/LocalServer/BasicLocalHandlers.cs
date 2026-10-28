@@ -39,6 +39,7 @@ namespace HotUpdateScripts.LocalNet
             LocalServer.Reg(dict, CmdId.C2S_Attack, OnBattleAttack);
             LocalServer.Reg(dict, CmdId.C2S_Exit, OnBattleExit);
             LocalServer.Reg(dict, CmdId.C2S_Revive, OnBattleRevive);
+            LocalServer.Reg(dict, CmdId.C2S_CopySweep, OnCopySweep);
             LocalServer.Reg(dict, CmdId.C2S_BattleReward, OnBattleReward);
 
             // 大厅宝箱
@@ -184,6 +185,7 @@ namespace HotUpdateScripts.LocalNet
         }
 
         private static object OnBattleRevive(byte[] req) { return BattleService.Instance.Revive(req); }
+        private static object OnCopySweep(byte[] req) { return BattleService.Instance.CopySweep(req); }
         private static object OnBattleExit(byte[] req)
         {
             return BattleService.Instance.Exit();
