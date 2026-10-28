@@ -705,7 +705,9 @@ namespace HotUpdateScripts.Game
                     }
                     else if (GameRoomM.Instance.CFGRoom.Roomtype == CFG_Room.RoomType.WorldBoss)
                     {
-                        UITool.Open<UIWorldBoss>();
+                        // 单机版不做世界Boss：进房已在 BattleService.Enter 被拦，
+                        // 这里只是兜底，避免万一走到时打开一个没有数据源的死页面。
+                        UITool.ShowTips("暂未开放");
                         return;
                     }
                     else if (GameRoomM.Instance.CFGRoom.Roomtype == CFG_Room.RoomType.YZDD)

@@ -361,21 +361,14 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
 
     private void ShowWorldBossButtonOpenStateInfo()
     {
-        if (GameUtil.Instance.CheckOpenServerIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.WorldBoss, false))
-        {
-            SetLeftButtonDescription(LeftButton.WorldBoss, $"{GameUtil.Instance.RemainingDaysUnlockOpen(CFG_XMLConfig.XML_Config.SwitchOpne.WorldBoss)}天后开启");
-            return;
-        }
-
-        if (GameUtil.Instance.CheakCurTime(CFG_XMLConfig.xmlConfig.WorldBoss.startTime, CFG_XMLConfig.xmlConfig.WorldBoss.endTime, CFG_XMLConfig.xmlConfig.WorldBoss.weekSet))
-        {
-            ShowWorldBossTimeRemaining();
-        }
-        else
-        {
-            string fightEndOpenTime = $"{GameUtil.Instance.GetWeekDayName(CFG_XMLConfig.xmlConfig.WorldBoss.weekSet)}开启";
-            SetLeftButtonDescription(LeftButton.WorldBoss, fightEndOpenTime);
-        }
+        // 【单机版不做世界Boss】原服那套是「异步多人」活动：
+        //   房间 100 配置 PlayerNum=1（每人独立战场、互相看不见），
+        //   但 boss 血条由全服共享（worldboss_mgr.changeHp 广播给该服所有 desk），
+        //   100 条血 + 每天 5 次 × 60 秒，单人最多打掉 2%，
+        //   掉落规则又是「耗尽该条血槽的玩家获得」，单机永远拿不到。
+        // 核心乐趣（抢最后一条血、伤害排名）在单机全部失效，缩水后与首领副本重叠，
+        // 所以整块不迁移，入口统一显示未开放（详见 doc 65 节）。
+        SetLeftButtonDescription(LeftButton.WorldBoss, "未开放");
     }
 
     private void ShowFightEndButtonOpenStateInfo()
@@ -668,15 +661,9 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
     {
         if (idx == 4)
         {
-            //if (GameUtil.Instance.CheckOpenServerIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.WorldBoss))
-            //    return;
-            //if (!GameUtil.Instance.CheakCurTime(CFG_XMLConfig.xmlConfig.WorldBoss.startTime, CFG_XMLConfig.xmlConfig.WorldBoss.endTime, CFG_XMLConfig.xmlConfig.WorldBoss.weekSet))
-            //{
-            //    UITool.ShowTips($"{GameUtil.Instance.GetWeekDayName(CFG_XMLConfig.xmlConfig.WorldBoss.weekSet)}开启");
-            //    return;
-            //}
-            if (!GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.WorldBoss))
-                UITool.Open<UIWorldBoss>();
+            // 单机版不做世界Boss（异步多人活动，见 ShowWorldBossButtonOpenStateInfo 的说明）
+            UITool.ShowTips("暂未开放");
+            return;
         }
         else if (idx == 5)
         {

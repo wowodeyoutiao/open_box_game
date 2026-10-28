@@ -461,12 +461,8 @@ public class UIFightChoice : UIBase<UIModelFightChoice, UIViewFightChoice>
                 OnPVPUI();
                 break;
             case ChanllengeType.WorldBoss:
-                if (!GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.WorldBoss))
-                {
-                    UITool.Open<UIWorldBoss>();
-                    UITool.Close<UIFightChoice>();
-                }
-
+                // 单机版不做世界Boss（异步多人活动，全服共享 100 条血，单人无法成立）
+                UITool.ShowTips("暂未开放");
                 break;
             case ChanllengeType.FightEnd:
                 if (!GameUtil.Instance.CheakIsLock(CFG_XMLConfig.XML_Config.SwitchOpne.FightEnd))
