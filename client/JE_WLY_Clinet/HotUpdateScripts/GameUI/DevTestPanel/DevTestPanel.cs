@@ -31,7 +31,8 @@ using HotUpdateScripts.ProtoM;
 public static class DevTestPanel
 {
     /// <summary>总开关。改成 false 就整块禁用，不用改别的地方。</summary>
-    public static bool Enabled = true;
+    /// <summary>临时关掉：排查「进主界面后装备格子不渲染」是否由本单元引起。</summary>
+    public static bool Enabled = false;
 
     private static GameObject _root;
     private static GameObject _panel;
@@ -305,20 +306,6 @@ public static class DevTestPanel
     /// </summary>
     private static Font GetFont()
     {
-        try
-        {
-            Text[] texts = UnityEngine.Object.FindObjectsOfType<Text>();
-            if (texts != null)
-            {
-                for (int i = 0; i < texts.Length; i++)
-                {
-                    if (texts[i] != null && texts[i].font != null)
-                        return texts[i].font;
-                }
-            }
-        }
-        catch { }
-
         try
         {
             Font f = Font.CreateDynamicFontFromOSFont("Microsoft YaHei", 20);
