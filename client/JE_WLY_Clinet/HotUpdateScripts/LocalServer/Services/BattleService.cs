@@ -1363,6 +1363,15 @@ namespace HotUpdateScripts.LocalNet
             }
 
             int roomType = (int)room.Roomtype;
+
+            // 首领 / 遗迹走另一条路（对齐原服 battleMapCopySweep）：
+            // 奖励取关卡的 Settlement，校验的是通关进度 + 挑战次数，不是每日副本次数。
+            if (roomType == (int)CFG_Room.RoomType.Boss
+                || roomType == (int)CFG_Room.RoomType.Relic)
+            {
+                return BattleMapSweep(role, room, request);
+            }
+
             if (!IsDailyMapRoom(roomType))
             {
                 res.Code = -1;
@@ -1460,6 +1469,142 @@ namespace HotUpdateScripts.LocalNet
 
             LocalPusher.Instance.PushBattleResultNow(new GameResultBattlePush
             {
+                RoomId = room.ID,
+                OverType = GameOverType.GameOverTypeCopySweep,
+                Items = items,
+            });
+            return res;
+        }
+
+        /// <summary>
+        /// 首领 / 遗迹扫荡（对齐原服 Player.battleMapCopySweep，player.go:8558）。
+        ///
+        /// 校验：
+        ///   首领：BossId（已通关的最高关）必须 >= 要扫的 BattleId；扣 BossChallengeTime
+        ///   遗迹：该关评价必须 >= 3 星；扣 RelicChallengeTime
+        /// 奖励：battleCfg.Settlement × sweepTimes（原服把 Settlement 平铺 sweepTimes 次）。
+        /// </summary>
+        private object BattleMapSweep(LocalRole role, CFGItem_Room room, CopySweepRequest request)
+        {
+            var res = new CopySweepResponse { Code = 0, Error = "" };
+            int roomType = (int)room.Roomtype;
+            int sweepTimes = request.SweepTimes > 0 ? request.SweepTimes : 1;
+
+            if (request.BattleId <= 0)
+            {
+                res.Code = -2;
+                res.Error = "请选择要扫荡的关卡";
+                return res;
+            }
+
+            CFGItem_Battle battleCfg;
+            try { battleCfg = CFG_Battle.GetById(request.BattleId); }
+            catch { battleCfg = null; }
+            if (battleCfg == null)
+            {
+                res.Code = -2;
+                res.Error = "关卡配置不存在";
+                return res;
+            }
+
+            bool isBoss = roomType == (int)CFG_Room.RoomType.Boss;
+            if (isBoss)
+            {
+                if (role.BossId < request.BattleId)
+                {
+                    res.Code = -3;
+                    res.Error = "尚未通关该首领，无法扫荡";
+                    return res;
+                }
+                if (role.BossChallengeTime <= 0)
+                {
+                    res.Code = -4;
+                    res.Error = "挑战次数不足";
+                    return res;
+                }
+                if (sweepTimes > role.BossChallengeTime)
+                    sweepTimes = role.BossChallengeTime;
+                role.BossChallengeTime -= sweepTimes;
+                TaskService.Instance.Dispatch(role, TargetType.TOTAL_BOSS_CHALLENGE, 0, sweepTimes);
+            }
+            else
+            {
+                if (role.RelicChallengeTime <= 0)
+                {
+                    res.Code = -4;
+                    res.Error = "挑战次数不足";
+                    return res;
+                }
+                if (sweepTimes > role.RelicChallengeTime)
+                    sweepTimes = role.RelicChallengeTime;
+
+                // 原服：Evaluation[battleID] 必须 >= 3 星才允许扫
+                int star = 0;
+                if (role.RelicEvaluation != null)
+                {
+                    for (int i = 0; i < role.RelicEvaluation.Count; i++)
+                    {
+                        KeyValue eval = role.RelicEvaluation[i];
+                        if (eval != null && eval.K == request.BattleId)
+                        {
+                            star = eval.V;
+                            break;
+                        }
+                    }
+                }
+                if (star < 3)
+                {
+                    res.Code = -5;
+                    res.Error = "该关卡未三星通关，无法扫荡";
+                    return res;
+                }
+
+                role.RelicChallengeTime -= sweepTimes;
+                TaskService.Instance.Dispatch(role, TargetType.TOTAL_RELIC_CHALLENGE, 0, sweepTimes);
+            }
+
+            // 奖励：Settlement 平铺 sweepTimes 次
+            var rewards = new Dictionary<int, long>();
+            if (battleCfg.Settlement != null)
+            {
+                for (int t = 0; t < sweepTimes; t++)
+                {
+                    for (int i = 0; i < battleCfg.Settlement.Length; i++)
+                    {
+                        CFGItem_Battle.AwardItem award = battleCfg.Settlement[i];
+                        if (award.id <= 0 || award.num <= 0)
+                            continue;
+                        long exist;
+                        rewards[award.id] = rewards.TryGetValue(award.id, out exist)
+                            ? exist + award.num : award.num;
+                    }
+                }
+            }
+
+            if (rewards.Count == 0)
+            {
+                res.Code = -1;
+                res.Error = "扫荡奖励配置缺失";
+                return res;
+            }
+
+            var items = new List<ItemInfo>();
+            foreach (KeyValuePair<int, long> kv in rewards)
+            {
+                ItemService.Instance.GrantReward(role, kv.Key, kv.Value);
+                items.Add(new ItemInfo { CfgId = kv.Key, Num = (int)kv.Value });
+            }
+
+            _pendingDoubleReward = new Dictionary<int, long>(rewards);
+            _pendingDoubleRoomType = roomType;
+
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushUserBaseNow();
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushStatsNow();
+            LocalPusher.Instance.PushBattleResultNow(new GameResultBattlePush
+            {
+                BattleId = request.BattleId,
                 RoomId = room.ID,
                 OverType = GameOverType.GameOverTypeCopySweep,
                 Items = items,

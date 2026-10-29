@@ -233,19 +233,17 @@ namespace HotUpdateScripts.LocalNet
             if (role.Level < cfg.Rolelevel)
                 return Resp(CmdId.C2S_HomeUpgradeBox, -4, "角色等级不足");
 
+            // 消耗：boxlevel.json 的 Consume（当前 40 级配置全是 id=1 金币，
+            // 但统一走 TryConsumeId，以后改配置加别的材料也不用再动代码）。
             if (cfg.Consume != null && cfg.Consume.Length > 0)
             {
-                CFGItem_BoxLevel.ConsumeItem consume = cfg.Consume[0];
-                if (consume.id == 1)
+                for (int i = 0; i < cfg.Consume.Length; i++)
                 {
-                    if (role.Coin < consume.num)
-                        return Resp(CmdId.C2S_HomeUpgradeBox, -5, "金币不足");
-                    role.Coin -= consume.num;
-                    LocalData.Instance.Gold = role.Coin;
-                }
-                else
-                {
-                    return Resp(CmdId.C2S_HomeUpgradeBox, -5, "升级材料暂未接入");
+                    CFGItem_BoxLevel.ConsumeItem consume = cfg.Consume[i];
+                    if (consume.id <= 0 || consume.num <= 0)
+                        continue;
+                    if (!ItemService.Instance.TryConsumeId(role, consume.id, consume.num))
+                        return Resp(CmdId.C2S_HomeUpgradeBox, -5, "升级材料不足");
                 }
             }
 

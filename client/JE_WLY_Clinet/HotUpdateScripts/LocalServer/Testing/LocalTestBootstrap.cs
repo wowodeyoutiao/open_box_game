@@ -149,6 +149,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunGuidanceVip());
                 if (scenario == "all" || scenario == "partner_p0")
                     cases.Add(RunPartnerP0());
+                if (scenario == "all" || scenario == "sweep_extra")
+                    cases.Add(RunSweepExtra());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3122,6 +3124,123 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 首领/遗迹扫荡（对齐原服 battleMapCopySweep）+ 宝箱升级材料。
+        ///   首领：未通关的关卡不能扫；有次数才能扫，扫完扣次数
+        ///   遗迹：必须三星评价才能扫
+        /// </summary>
+        private static CaseResult RunSweepExtra()
+        {
+            var result = new CaseResult("sweep_extra");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            int oldBossId = role.BossId;
+            int oldBossTime = role.BossChallengeTime;
+            int oldRelicTime = role.RelicChallengeTime;
+            int oldBoxLevel = role.BoxLevel;
+            long oldCoin = role.Coin;
+            List<KeyValue> oldEval = role.RelicEvaluation;
+            try
+            {
+                // ---- 1) 首领：没通关 → -3 ----
+                role.BossId = 0;
+                role.BossChallengeTime = 2;
+                object raw0 = BattleService.Instance.CopySweep(
+                    TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                    {
+                        RoomId = 700,
+                        BattleId = 1501001,
+                        SweepTimes = 1,
+                    }));
+                var r0 = raw0 as CopySweepResponse;
+                result.Check(r0 != null && r0.Code == -3,
+                    "sweep.bossLocked=" + (r0 == null ? "null" : r0.Code + "/" + r0.Error));
+
+                // ---- 2) 首领：通关 + 有次数 → 成功并扣次数 ----
+                role.BossId = 1501001;
+                role.BossChallengeTime = 2;
+                object raw1 = BattleService.Instance.CopySweep(
+                    TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                    {
+                        RoomId = 700,
+                        BattleId = 1501001,
+                        SweepTimes = 1,
+                    }));
+                var r1 = raw1 as CopySweepResponse;
+                result.Check(r1 != null && r1.Code == 0,
+                    "sweep.bossOk=" + (r1 == null ? "null" : r1.Code + "/" + r1.Error));
+                result.Check(role.BossChallengeTime == 1,
+                    "sweep.bossTimes=" + role.BossChallengeTime);
+
+                // ---- 3) 遗迹：没有三星评价 → -5 ----
+                role.RelicEvaluation = new List<KeyValue>();
+                role.RelicChallengeTime = 2;
+                object raw2 = BattleService.Instance.CopySweep(
+                    TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                    {
+                        RoomId = 900,
+                        BattleId = 1701001,
+                        SweepTimes = 1,
+                    }));
+                var r2 = raw2 as CopySweepResponse;
+                result.Check(r2 != null && r2.Code == -5,
+                    "sweep.relicNoStar=" + (r2 == null ? "null" : r2.Code + "/" + r2.Error));
+
+                // ---- 4) 遗迹：三星评价 → 成功 ----
+                role.RelicEvaluation = new List<KeyValue>
+                {
+                    new KeyValue { K = 1701001, V = 3 },
+                };
+                role.RelicChallengeTime = 2;
+                object raw3 = BattleService.Instance.CopySweep(
+                    TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                    {
+                        RoomId = 900,
+                        BattleId = 1701001,
+                        SweepTimes = 1,
+                    }));
+                var r3 = raw3 as CopySweepResponse;
+                result.Check(r3 != null && r3.Code == 0,
+                    "sweep.relicOk=" + (r3 == null ? "null" : r3.Code + "/" + r3.Error));
+
+                // ---- 5) 宝箱升级：金币不足 → -5；够则成功 ----
+                role.BoxLevel = 1;
+                role.BoxUpgradeEndUnix = 0;
+                role.Coin = 0;
+                object rawBox0 = BoxService.Instance.UpgradeBox(
+                    TCPClientMgr.ProtoSerialize(new HomeUpgradeBoxRequest()));
+                var b0 = rawBox0 as CommonResponse;
+                result.Check(b0 != null && b0.Code == -5,
+                    "sweep.boxNoCoin=" + (b0 == null ? "null" : b0.Code + "/" + b0.Error));
+
+                role.Coin = 50000000;
+                object rawBox1 = BoxService.Instance.UpgradeBox(
+                    TCPClientMgr.ProtoSerialize(new HomeUpgradeBoxRequest()));
+                var b1 = rawBox1 as CommonResponse;
+                result.Check(b1 != null && b1.Code == 0,
+                    "sweep.boxOk=" + (b1 == null ? "null" : b1.Code + "/" + b1.Error));
+            }
+            finally
+            {
+                role.BossId = oldBossId;
+                role.BossChallengeTime = oldBossTime;
+                role.RelicChallengeTime = oldRelicTime;
+                role.BoxLevel = oldBoxLevel;
+                role.Coin = oldCoin;
+                role.RelicEvaluation = oldEval;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 伙伴技能升级/进阶 + 伙伴装备魂石。
         /// 这两块原服本来就支持（skillsUpgrade 的 paruid 分支、genstoneChange 的 partnerslotid 分支），
