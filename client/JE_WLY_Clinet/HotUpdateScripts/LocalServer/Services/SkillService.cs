@@ -123,14 +123,9 @@ namespace HotUpdateScripts.LocalNet
                 OldSkillId = skillId,
                 NewSkillId = skillId,
             };
-            if (partnerUid != 0)
-            {
-                response.Error = "单机版暂不支持伙伴技能升级";
-                return response;
-            }
 
             LocalRole role = LocalData.Instance.Current;
-            SkillInfo owned = FindRoleSkill(role, skillId);
+            SkillInfo owned = FindSkill(role, skillId, partnerUid);
             if (owned == null)
             {
                 response.Error = "技能未学习";
@@ -167,7 +162,8 @@ namespace HotUpdateScripts.LocalNet
 
             int oldCfgId = owned.CfgId;
             owned.CfgId = next.UUID;
-            if (role.SkillSlots != null)
+            // 伙伴技能没有「技能槽」概念（原服存在 partner.skills 列表里），只换 CfgId
+            if (partnerUid == 0 && role.SkillSlots != null)
             {
                 for (int i = 0; i < role.SkillSlots.Length; i++)
                 {
@@ -196,14 +192,9 @@ namespace HotUpdateScripts.LocalNet
                 PartnerUid = partnerUid,
                 OldSkillId = skillId,
             };
-            if (partnerUid != 0)
-            {
-                response.Error = "单机版暂不支持伙伴技能进阶";
-                return response;
-            }
 
             LocalRole role = LocalData.Instance.Current;
-            SkillInfo owned = FindRoleSkill(role, skillId);
+            SkillInfo owned = FindSkill(role, skillId, partnerUid);
             if (owned == null)
             {
                 response.Error = "技能未学习";
@@ -305,6 +296,41 @@ namespace HotUpdateScripts.LocalNet
             {
                 if (role.Skills[i] != null && role.Skills[i].CfgId == skillId)
                     return role.Skills[i];
+            }
+            return null;
+        }
+
+        private static PartnerInfo FindPartner(LocalRole role, long uid)
+        {
+            if (role == null || role.Partners == null)
+                return null;
+            for (int i = 0; i < role.Partners.Count; i++)
+            {
+                PartnerInfo partner = role.Partners[i];
+                if (partner != null && partner.Uid == uid)
+                    return partner;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 按 partnerUid 找技能：0 = 玩家自己的技能，否则 = 该伙伴的技能表。
+        /// 对齐原服 skillsUpgrade/skillsAdvanced 的 paruid 分支
+        /// （player.go:5589-5607，伙伴存在 partner.skills 里，匹配口径一致）。
+        /// </summary>
+        private static SkillInfo FindSkill(LocalRole role, int skillId, long partnerUid)
+        {
+            if (partnerUid == 0)
+                return FindRoleSkill(role, skillId);
+
+            PartnerInfo partner = FindPartner(role, partnerUid);
+            if (partner == null || partner.Skills == null)
+                return null;
+            for (int i = 0; i < partner.Skills.Count; i++)
+            {
+                SkillInfo skill = partner.Skills[i];
+                if (skill != null && skill.CfgId == skillId)
+                    return skill;
             }
             return null;
         }

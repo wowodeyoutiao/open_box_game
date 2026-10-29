@@ -9,7 +9,8 @@ namespace HotUpdateScripts.LocalNet
     /// 魂石镶嵌 / 拆卸。对齐原服 Player.genstoneChange：
     ///
     ///   1) 槽位校验：GemstoneSlot 下标 0..3（客户端 SelectIdx 直接用下标）
-    ///   2) 伙伴装备不支持（单人版直接拒绝，伙伴装备不走本地属性结算）
+    ///   2) 伙伴装备支持：partnerslotid != 0 时改伙伴槽位的 Slot.Gemstone
+    ///      （属性结算在 PartnerService.AddPartnerEquipStats → AddPartnerGemstones）
     ///   3) 开槽数：config.xml 的 Diamond/openlevel/stage（num = 槽位序号, level = 需要等级）
     ///      取所有「等级已满足」里最大的 num，下标 >= canSlot 就是没开
     ///   4) 镶嵌：校验背包有这颗魂石 → 校验 DiamondPosition 含该装备部位

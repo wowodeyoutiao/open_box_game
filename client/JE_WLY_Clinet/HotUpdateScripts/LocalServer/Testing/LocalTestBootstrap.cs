@@ -147,6 +147,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunMining());
                 if (scenario == "all" || scenario == "guidance_vip")
                     cases.Add(RunGuidanceVip());
+                if (scenario == "all" || scenario == "partner_p0")
+                    cases.Add(RunPartnerP0());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3120,6 +3122,70 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 伙伴技能升级/进阶 + 伙伴装备魂石。
+        /// 这两块原服本来就支持（skillsUpgrade 的 paruid 分支、genstoneChange 的 partnerslotid 分支），
+        /// 本地之前对伙伴直接拒绝，现在放开。这里只验「不再被伙伴限制拒绝」。
+        /// </summary>
+        private static CaseResult RunPartnerP0()
+        {
+            var result = new CaseResult("partner_p0");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            try
+            {
+                EnsureBattlePartner(role);
+                result.Check(role.Partners != null && role.Partners.Count > 0,
+                    "p0.hasPartner=" + (role.Partners == null ? 0 : role.Partners.Count));
+                if (role.Partners == null || role.Partners.Count == 0)
+                    return result;
+
+                PartnerInfo partner = role.Partners[0];
+
+                // ---- 1) 伙伴技能升级：不再返回「暂不支持伙伴技能升级」----
+                int skillCfgId = 0;
+                if (partner.Skills != null && partner.Skills.Count > 0)
+                    skillCfgId = partner.Skills[0].CfgId;
+
+                SkillUpgradeResponse up = SkillService.Instance.Upgrade(skillCfgId, partner.Uid);
+                bool upRejected = up != null && up.Error != null && up.Error.Contains("暂不支持");
+                result.Check(!upRejected,
+                    "p0.skillUp=" + (up == null ? "null" : up.Code + "/" + up.Error));
+
+                // ---- 2) 伙伴技能进阶：同样不该被伙伴身份拒绝 ----
+                SkillAdvancedResponse adv = SkillService.Instance.Advance(skillCfgId, partner.Uid);
+                bool advRejected = adv != null && adv.Error != null && adv.Error.Contains("暂不支持");
+                result.Check(!advRejected,
+                    "p0.skillAdv=" + (adv == null ? "null" : adv.Code + "/" + adv.Error));
+
+                // ---- 3) 伙伴装备魂石：传 PartnerSlotId 不该报「伙伴装备不支持」----
+                GemstoneChangeResponse gem = GemService.Instance.Change(new GemstoneChangeRequest
+                {
+                    ItemUid = 0,
+                    Slot = EquipSlot.Weapon,
+                    GemstoneSlot = (GemstoneSlot)1,
+                    OpType = 1,
+                    PartnerSlotId = PartnerService.FirstPartnerSlotId,
+                });
+                bool gemRejected = gem != null && gem.Error != null && gem.Error.Contains("不支持");
+                result.Check(!gemRejected,
+                    "p0.partnerGem=" + (gem == null ? "null" : gem.Code + "/" + gem.Error));
+            }
+            finally
+            {
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 引导存档 + VIP 属性。
         ///   引导：上报后能持久化，重连拉取能拿到
