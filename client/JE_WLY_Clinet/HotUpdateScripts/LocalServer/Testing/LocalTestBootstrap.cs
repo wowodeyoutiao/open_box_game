@@ -153,6 +153,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunSweepExtra());
                 if (scenario == "all" || scenario == "core_missing")
                     cases.Add(RunCoreMissing());
+                if (scenario == "all" || scenario == "shushu_route")
+                    cases.Add(RunShushuRoute());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3126,6 +3128,35 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 数数埋点路由：客户端 URL 常量末尾带空格（"/v1/window/openBox "），
+        /// 发出去编码成 %20，以前 EndsWith 匹配不上 → 404 → 每次开箱弹「当前功能尚未开放」。
+        /// 这里直接打 Router，确认带空格 / %20 的 URL 也能命中。
+        /// </summary>
+        private static CaseResult RunShushuRoute()
+        {
+            var result = new CaseResult("shushu_route");
+
+            string[] urls =
+            {
+                "http://localhost:8080/v1/window/openBox%20",
+                "http://localhost:8080/v1/window/openBox ",
+                "http://localhost:8080/v1/window/openBox",
+                "http://localhost:8080/v1/window/completed%20",
+                "http://localhost:8080/v1/window/shushu%20",
+                "http://localhost:8080/v1/window/ta_mp_hide%20",
+            };
+
+            for (int i = 0; i < urls.Length; i++)
+            {
+                var r = LocalHttpRouter.HandleJson(urls[i], "{}");
+                result.Check(r != null && r.Matched && r.Success,
+                    "shushu[" + i + "]=" + (r == null ? "null" : "matched=" + r.Matched + " ok=" + r.Success));
+            }
+
+            return result;
+        }
+
         /// <summary>
         /// 补三个此前零覆盖的核心协议：
         ///   UpgradeLevel  玩家升级 / 伙伴升级（伙伴不能超过主角等级，升级扣主角经验）
