@@ -413,6 +413,10 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
         RoleM.Instance.IsReceivedGuideData = false;
         RoleM.Instance.IsFirstReceiveBaseInfo = true;
         RoleM.Instance.GuideTypes = null;
+        // 向服务端拉一次已完成的新手引导进度（传空数组＝纯查询）。
+        // 服务端 GuidanceUpdate 会把已存的类型原样回一份，
+        // 收到后 RoleM.GuideTypes 才有值，CFG_Guidance 的完成判断才不会每次都判成"没引导过"。
+        TcpC.C2S_GuidanceUpdateRequest(new System.Collections.Generic.List<int>());
         StateM.Instance.isSendUpgradeOrSpeedUpBox = false;
         ChatM.Instance.ClearAllChat();
     }

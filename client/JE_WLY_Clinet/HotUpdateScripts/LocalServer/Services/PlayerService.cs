@@ -226,6 +226,64 @@ namespace HotUpdateScripts.LocalNet
         /// <summary>
         /// TCP 登录响应。GameStatus=0 触发客户端切场景进大厅。
         /// </summary>
+        /// <summary>
+        /// 新手引导进度上报/回填（C2S_GuidanceUpdate）。
+        ///
+        /// 客户端链路：
+        ///   UIGuide 某段引导完成 → RoleM.SaveGuide() → C2S_GuidanceUpdate{ Guidance = 已完成类型 }
+        ///   收到响应 → RoleM.GuideTypes = resp.Guidance
+        /// 客户端用 CFG_Guidance 的 IsFinish(type) 判断还要不要弹引导，
+        /// 所以这里只要把已完成的类型持久化并原样回一份，重复引导就不会再触发。
+        ///
+        /// 客户端在登录时会发一次空数组来「拉取」已有进度。
+        /// </summary>
+        public object GuidanceUpdate(byte[] req)
+        {
+            GuidanceUpdateRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<GuidanceUpdateRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new GuidanceUpdateResponse { Code = -1, Error = "请求解析失败: " + e.Message };
+            }
+
+            var res = new GuidanceUpdateResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            if (role.GuideTypes == null)
+                role.GuideTypes = new List<int>();
+
+            bool changed = false;
+            if (request != null && request.Guidance != null)
+            {
+                for (int i = 0; i < request.Guidance.Length; i++)
+                {
+                    int type = request.Guidance[i];
+                    if (type <= 0)
+                        continue;
+                    if (!role.GuideTypes.Contains(type))
+                    {
+                        role.GuideTypes.Add(type);
+                        changed = true;
+                    }
+                }
+            }
+
+            if (changed)
+                SaveCoordinator.Instance.MarkDirty();
+
+            res.Guidance = role.GuideTypes.ToArray();
+            return res;
+        }
+
         public object BuildLoginTcpResponse()
         {
             LocalData d = LocalData.Instance;

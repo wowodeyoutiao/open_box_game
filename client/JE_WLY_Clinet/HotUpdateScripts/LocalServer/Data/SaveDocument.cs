@@ -42,6 +42,9 @@ namespace HotUpdateScripts.LocalNet
         public long TrialVoucher;
         public long Energy = 100;
 
+        /// <summary>新手引导：已完成的引导类型（CFG_Guidance.GuideType），对齐原服 guidance 表</summary>
+        public List<int> GuideTypes = new List<int>();
+
         // 签到进度（见 LocalRole.SignUserRound 的说明）
         public int SignUserRound = 1;
         public int SignRound = 1;
@@ -415,6 +418,9 @@ namespace HotUpdateScripts.LocalNet
                 TrialVoucher = role.TrialVoucher,
                 Energy = role.Energy,
                 SignUserRound = role.SignUserRound,
+                GuideTypes = role.GuideTypes == null
+                    ? new List<int>()
+                    : new List<int>(role.GuideTypes),
                 SignRound = role.SignRound,
                 SignDay = role.SignDay,
                 SignLastUnix = role.SignLastUnix,
@@ -774,6 +780,9 @@ namespace HotUpdateScripts.LocalNet
                 TrialVoucher = save.TrialVoucher,
                 Energy = save.Energy,
                 SignUserRound = save.SignUserRound,
+                GuideTypes = save.GuideTypes == null
+                    ? new List<int>()
+                    : new List<int>(save.GuideTypes),
                 SignRound = save.SignRound,
                 SignDay = save.SignDay,
                 SignLastUnix = save.SignLastUnix,

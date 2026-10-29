@@ -145,6 +145,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunAutoPlay());
                 if (scenario == "all" || scenario == "mining")
                     cases.Add(RunMining());
+                if (scenario == "all" || scenario == "guidance_vip")
+                    cases.Add(RunGuidanceVip());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -2363,6 +2365,9 @@ namespace HotUpdateScripts.LocalNet.Testing
             int oldForced = EquipService.Instance.ForcedStarWeight;
             try
             {
+                // VIP 属性已接入属性计算，本用例验的是装备/宝石/宠物本身的数值，
+                // 先把 VIP 归零让基线稳定（snapshot.Restore 会还原）。
+                role.Vip = 0;
                 role.Equips = new Dictionary<EquipSlot, ItemInfo>();
                 role.EquipStars = new Dictionary<EquipSlot, int>();
                 if (role.BagData == null)
@@ -2494,6 +2499,9 @@ namespace HotUpdateScripts.LocalNet.Testing
             List<ItemInfo> oldBag = role.BagData == null ? null : role.BagData.ItemList;
             try
             {
+                // VIP 属性已接入属性计算，本用例验的是装备/宝石/宠物本身的数值，
+                // 先把 VIP 归零让基线稳定（snapshot.Restore 会还原）。
+                role.Vip = 0;
                 role.Equips = new Dictionary<EquipSlot, ItemInfo>();
                 role.EquipGems = new Dictionary<EquipSlot, int[]>();
                 if (role.BagData == null)
@@ -3112,6 +3120,86 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 引导存档 + VIP 属性。
+        ///   引导：上报后能持久化，重连拉取能拿到
+        ///   VIP ：VIP 等级提升后属性真的涨（13-17 是各类百分比，VIP5 = 各 +5%）
+        /// </summary>
+        private static CaseResult RunGuidanceVip()
+        {
+            var result = new CaseResult("guidance_vip");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            List<int> oldGuide = role.GuideTypes;
+            int oldVip = role.Vip;
+            try
+            {
+                // ---------- 引导存档 ----------
+                role.GuideTypes = new List<int>();
+
+                // 1) 空上报 = 拉取，初始为空
+                object raw0 = PlayerService.Instance.GuidanceUpdate(
+                    TCPClientMgr.ProtoSerialize(new GuidanceUpdateRequest { Guidance = new int[0] }));
+                var r0 = raw0 as GuidanceUpdateResponse;
+                result.Check(r0 != null && r0.Code == 0
+                        && r0.Guidance != null && r0.Guidance.Length == 0,
+                    "guide.empty=" + (r0 == null ? "null"
+                        : r0.Code + "/" + (r0.Guidance == null ? "null" : r0.Guidance.Length.ToString())));
+
+                // 2) 上报 1、2 两段已完成
+                object raw1 = PlayerService.Instance.GuidanceUpdate(
+                    TCPClientMgr.ProtoSerialize(new GuidanceUpdateRequest { Guidance = new[] { 1, 2 } }));
+                var r1 = raw1 as GuidanceUpdateResponse;
+                result.Check(r1 != null && r1.Code == 0 && r1.Guidance != null && r1.Guidance.Length == 2,
+                    "guide.save=" + (r1 == null ? "null"
+                        : r1.Code + "/" + (r1.Guidance == null ? "null" : r1.Guidance.Length.ToString())));
+
+                // 3) 再拉一次，应当拿到已存的 1、2（模拟重新登录）
+                object raw2 = PlayerService.Instance.GuidanceUpdate(
+                    TCPClientMgr.ProtoSerialize(new GuidanceUpdateRequest { Guidance = new int[0] }));
+                var r2 = raw2 as GuidanceUpdateResponse;
+                bool persisted = r2 != null && r2.Guidance != null && r2.Guidance.Length == 2
+                    && Array.IndexOf(r2.Guidance, 1) >= 0 && Array.IndexOf(r2.Guidance, 2) >= 0;
+                result.Check(persisted, "guide.reload=" + (r2 == null || r2.Guidance == null
+                    ? "null" : string.Join(",", r2.Guidance)));
+
+                // 4) 重复上报不产生重复项
+                object raw3 = PlayerService.Instance.GuidanceUpdate(
+                    TCPClientMgr.ProtoSerialize(new GuidanceUpdateRequest { Guidance = new[] { 1, 2 } }));
+                var r3 = raw3 as GuidanceUpdateResponse;
+                result.Check(r3 != null && r3.Guidance != null && r3.Guidance.Length == 2,
+                    "guide.dedup=" + (r3 == null || r3.Guidance == null ? "null" : r3.Guidance.Length.ToString()));
+
+                // ---------- VIP 属性 ----------
+                role.Vip = 0;
+                RoleStatService.Instance.Recalculate(role, true);
+                int combat0 = role.TotalCombat;
+
+                role.Vip = 5;
+                RoleStatService.Instance.Recalculate(role, true);
+                int combat5 = role.TotalCombat;
+
+                result.Check(combat5 > combat0,
+                    "vip.combat=" + combat0 + "->" + combat5);
+            }
+            finally
+            {
+                role.GuideTypes = oldGuide;
+                role.Vip = oldVip;
+                RoleStatService.Instance.Recalculate(role, true);
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 挖矿：只有升星石(204)/魂石(205)副本能采集；采集即判死，掉落走正常击杀链路。
         /// 对齐原服 RoomManager.Mining → desk.go 的 StarUpStoneFBMap/SoulStoneFBMap 分支。
@@ -4498,6 +4586,9 @@ namespace HotUpdateScripts.LocalNet.Testing
             List<int> oldEver = role.PetEverHave;
             try
             {
+                // VIP 属性已接入属性计算，本用例验的是装备/宝石/宠物本身的数值，
+                // 先把 VIP 归零让基线稳定（snapshot.Restore 会还原）。
+                role.Vip = 0;
                 // 宠物属性只看上阵槽，装备/魂石清掉避免干扰断言
                 role.Equips = new Dictionary<EquipSlot, ItemInfo>();
                 role.EquipGems = new Dictionary<EquipSlot, int[]>();
@@ -6155,6 +6246,8 @@ namespace HotUpdateScripts.LocalNet.Testing
             public int BattleId;
             public int BattleRewardStage;
             public int Level;
+            /// <summary>VIP 等级。加了 VIP 属性计算后，残留的 VIP 会改变战力断言，必须一起快照。</summary>
+            public int Vip;
             public ItemInfo[] BagItems;
 
             public static BoxSnapshot Capture()
@@ -6174,6 +6267,7 @@ namespace HotUpdateScripts.LocalNet.Testing
                     Data = data,
                     Role = role,
                     Index = data.CurrentIdx,
+                    Vip = role.Vip,
                     BoxLevel = role.BoxLevel,
                     Treasure = role.TreasuerBox,
                     NextItemUid = data.NextItemUid,
@@ -6207,6 +6301,7 @@ namespace HotUpdateScripts.LocalNet.Testing
                 Role.Tasks = Tasks;
                 Role.BattleId = BattleId;
                 Role.BattleRewardStage = BattleRewardStage;
+                Role.Vip = Vip;
                 Role.Level = Level;
                 Role.Coin = Coin;
                 Role.Exp = Exp;

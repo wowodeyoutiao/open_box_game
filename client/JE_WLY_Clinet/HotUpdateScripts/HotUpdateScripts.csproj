@@ -280,6 +280,7 @@
     <Compile Include="GameUI\UIGameSweepAndBuy\UIGameSweepAndBuy.cs" />
     <Compile Include="GameUI\UIGameSweepAndBuy\UIModelGameSweepAndBuy.cs" />
     <Compile Include="GameUI\UIGameSweepAndBuy\UIViewGameSweepAndBuy.cs" />
+    <Compile Include="GameUI\DevTestPanel\DevTestPanel.cs" />
     <Compile Include="GameUI\UIGuide\UIGuide.cs" />
     <Compile Include="GameUI\UIGuide\UIModelGuide.cs" />
     <Compile Include="GameUI\UIGuide\UIViewGuide.cs" />

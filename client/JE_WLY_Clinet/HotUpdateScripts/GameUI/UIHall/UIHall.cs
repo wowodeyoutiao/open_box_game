@@ -829,6 +829,10 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
 
     public override void OnEnter(params object[] args)
     {
+        // 内部真机测试入口（左侧 TEST 按钮）。整个单元在 GameUI/DevTestPanel/ 下，
+        // 下线时删目录 + 删这一行即可。整块开关见 DevTestPanel.Enabled。
+        DevTestPanel.Ensure();
+
         if (TopUI == null)
         {
             UITool.LoadUII<UICom_TopRes>(GetView().root_Base, (a) =>

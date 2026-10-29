@@ -38,6 +38,13 @@ namespace HotUpdateScripts.LocalNet
         /// <summary>当前轮内第几天（对应 sign.json 的 Days，0 = 还没开始）</summary>
         public int SignDay = 0;
         /// <summary>上次签到的时间戳（秒），用来判断「今天签过没」</summary>
+        /// <summary>
+        /// 新手引导：已完成的引导类型（对应 CFG_Guidance.GuideType）。
+        /// 客户端 UIGuide 完成某段引导时调 SaveGuide() 上报，这里存下来，
+        /// 下次登录由 GuidanceUpdate 回填，避免重复引导。
+        /// </summary>
+        public List<int> GuideTypes = new List<int>();
+
         public long SignLastUnix = 0;
 
         // 战斗属性运行时缓存；正式结果由 RoleStatService 统一计算。

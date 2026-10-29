@@ -34,6 +34,7 @@ namespace HotUpdateScripts.LocalNet
             LocalServer.Reg(dict, CmdId.C2S_InstanceTimeAdd, OnInstanceTimeAdd);
             LocalServer.Reg(dict, CmdId.C2S_AutoPlay, OnAutoPlay);
             LocalServer.Reg(dict, CmdId.C2S_Mining, OnMining);
+            LocalServer.Reg(dict, CmdId.C2S_GuidanceUpdate, OnGuidanceUpdate);
             LocalServer.Reg(dict, CmdId.C2S_ItemDisassembly, OnItemDisassembly);
             LocalServer.Reg(dict, CmdId.C2S_AutoDisassembly, OnAutoDisassembly);
 
@@ -154,6 +155,7 @@ namespace HotUpdateScripts.LocalNet
         private static object OnInstanceTimeAdd(byte[] req) { return BattleService.Instance.InstanceTimeAdd(req); }
         private static object OnAutoPlay(byte[] req) { return BattleService.Instance.AutoPlay(req); }
         private static object OnMining(byte[] req) { return BattleService.Instance.Mining(req); }
+        private static object OnGuidanceUpdate(byte[] req) { return PlayerService.Instance.GuidanceUpdate(req); }
         private static object OnItemDisassembly(byte[] req) { return ItemService.Instance.ItemDisassembly(req); }
         private static object OnAutoDisassembly(byte[] req) { return ItemService.Instance.AutoDisassembly(req); }
         private static object OnBattleJoin(byte[] req)

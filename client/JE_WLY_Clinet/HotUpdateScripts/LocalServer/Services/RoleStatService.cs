@@ -94,6 +94,9 @@ namespace HotUpdateScripts.LocalNet
             AddRoleBase(role, values);
             AddInitialSpeed(role.Job, values);
             AddEquipment(role, values);
+            // VIP 属性（原服 refreshStats 的 vipStatus 段，位置在暴击伤害之前）。
+            // 必须在 ApplyPercentages 之前 —— VIP 给的可能是百分比属性。
+            AddVip(role, values);
             AddCriticalDamage(values);
             // ⚠️ 这里**不并入**上阵伙伴的属性。
             //
@@ -368,6 +371,50 @@ namespace HotUpdateScripts.LocalNet
 
             foreach (KeyValuePair<Attribute, int> kv in equipPrimary)
                 Add(values, kv.Key, kv.Value);
+        }
+
+        /// <summary>
+        /// VIP 属性（对齐原服 player.go:737-748 的 vipStatus 段）。
+        ///
+        /// 遍历**所有 VIPLevel ≤ 当前等级**的档位，每项属性取最大值 ——
+        /// 不是累加，也不是只取当前等级那一档。原服写法：
+        ///     for _, gv := range global.VIPCfg {
+        ///         if gv.VIPLevel <= p.vip {
+        ///             for _, att := range gv.Pcontent {
+        ///                 if att.Value > 已有值 { 覆盖 }
+        ///             }
+        ///         }
+        ///     }
+        /// </summary>
+        private static void AddVip(LocalRole role, Dictionary<Attribute, int> values)
+        {
+            if (role == null || role.Vip <= 0)
+                return;
+
+            CFG_VIP table;
+            try { table = CFG_VIP.Get(); }
+            catch { table = null; }
+            if (table == null || table.DicDatas == null)
+                return;
+
+            foreach (CFGItem_VIP cfg in table.DicDatas.Values)
+            {
+                if (cfg == null || cfg.VIPLevel > role.Vip)
+                    continue;
+                if (cfg.Pcontent == null)
+                    continue;
+
+                for (int i = 0; i < cfg.Pcontent.Length; i++)
+                {
+                    CFGItem_VIP.DailyTimeItem item = cfg.Pcontent[i];
+                    if (item == null || item.key <= 0 || item.value <= 0)
+                        continue;
+
+                    Attribute attr = (Attribute)item.key;
+                    if (item.value > Get(values, attr))
+                        Set(values, attr, item.value);
+                }
+            }
         }
 
         /// <summary>
