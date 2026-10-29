@@ -31,6 +31,7 @@ public class CFG_All
         typeof(CFG_Room),
         typeof(CFG_Sign),
         typeof(CFG_ItemUse),
+        typeof(CFG_RandomCreat),
         typeof(CFG_Skill),
         typeof(CFG_SkillEffect),
         typeof(CFG_Store),

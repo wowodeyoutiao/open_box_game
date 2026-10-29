@@ -31,6 +31,13 @@ public class CFGItem_RandomDistrib : CFGItemBase
     public int PieceMin_Gold;
     public int PieceMax_Gold;
 
+    // 红 / 彩虹品质的区间（原服 bootstrap/init.go 把 PieceMin_Red / PieceMin_Yellow
+    // 分别映射到 ItemQuality_RED(7) / ItemQuality_Rainbow(8)）。之前没解析，洗炼到这两档会取不到区间。
+    public int PieceMin_Red;
+    public int PieceMax_Red;
+    public int PieceMin_Yellow;
+    public int PieceMax_Yellow;
+
     public int Color;
 
 }
@@ -157,4 +164,63 @@ public class CFG_RandomDistrib : CFGTableBase<CFGItem_RandomDistrib>
         return num;
     }
 
+    // ==================== 洗炼用的直查索引 ====================
+    // 对齐原服 GetRandomDistribCfg(UUID, part) / GetRandomDistribCfgByKind(kind, part)。
+    // 用 Dictionary.TryGetValue 直查，不遍历 DicDatas 的 KeyValuePair。
+
+    private static Dictionary<int, CFGItem_RandomDistrib> _byUuidPart;
+    private static Dictionary<int, CFGItem_RandomDistrib> ByUuidPart
+    {
+        get
+        {
+            if (_byUuidPart == null)
+            {
+                _byUuidPart = new Dictionary<int, CFGItem_RandomDistrib>();
+                foreach (CFGItem_RandomDistrib cfg in Get().DicDatas.Values)
+                {
+                    if (cfg == null) continue;
+                    int key = cfg.UUID * 10000 + cfg.ValueID;
+                    if (!_byUuidPart.ContainsKey(key))
+                        _byUuidPart.Add(key, cfg);
+                }
+            }
+            return _byUuidPart;
+        }
+    }
+
+    private static Dictionary<int, CFGItem_RandomDistrib> _byKindPart;
+    private static Dictionary<int, CFGItem_RandomDistrib> ByKindPart
+    {
+        get
+        {
+            if (_byKindPart == null)
+            {
+                _byKindPart = new Dictionary<int, CFGItem_RandomDistrib>();
+                foreach (CFGItem_RandomDistrib cfg in Get().DicDatas.Values)
+                {
+                    if (cfg == null) continue;
+                    int key = cfg.Kind * 10000 + cfg.ValueID;
+                    if (!_byKindPart.ContainsKey(key))
+                        _byKindPart.Add(key, cfg);
+                }
+            }
+            return _byKindPart;
+        }
+    }
+
+    /// <summary>按 (UUID, 档位) 查，对齐原服 GetRandomDistribCfg。</summary>
+    public static CFGItem_RandomDistrib GetByUuidAndPart(int uuid, int valuePart)
+    {
+        Dictionary<int, CFGItem_RandomDistrib> idx = ByUuidPart;
+        CFGItem_RandomDistrib cfg;
+        return idx != null && idx.TryGetValue(uuid * 10000 + valuePart, out cfg) ? cfg : null;
+    }
+
+    /// <summary>按 (属性种类, 档位) 查，对齐原服 GetRandomDistribCfgByKind。</summary>
+    public static CFGItem_RandomDistrib GetByKindAndPart(int kind, int valuePart)
+    {
+        Dictionary<int, CFGItem_RandomDistrib> idx = ByKindPart;
+        CFGItem_RandomDistrib cfg;
+        return idx != null && idx.TryGetValue(kind * 10000 + valuePart, out cfg) ? cfg : null;
+    }
 }

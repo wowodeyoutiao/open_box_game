@@ -137,6 +137,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunRevive());
                 if (scenario == "all" || scenario == "sweep")
                     cases.Add(RunCopySweep());
+                if (scenario == "all" || scenario == "refine")
+                    cases.Add(RunEquipRefine());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3104,6 +3106,126 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 装备洗练：配置可加载 → 随机洗练产出新词条 → 确认替换后旧词条消失、新词条生效。
+        /// 对齐原服 Player.equipRefine / equipRefineReplace。
+        /// </summary>
+        private static CaseResult RunEquipRefine()
+        {
+            var result = new CaseResult("refine");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            long oldCoin = role.Coin;
+            try
+            {
+                // 0) 洗练配置表能加载（主键冲突曾导致整张表挂掉 + ILRuntime 栈溢出）
+                result.Check(CFG_RandomCreat.QualityGroupCount > 0,
+                    "refine.cfgLoaded=" + CFG_RandomCreat.QualityGroupCount);
+
+                if (role.BagData == null)
+                    role.BagData = new Bag { ItemList = new List<ItemInfo>() };
+
+                // 1) 没有待确认结果时替换被拒
+                object rawEmpty = ItemService.Instance.EquipRefineReplace(
+                    TCPClientMgr.ProtoSerialize(new EquipRefineReplaceRequest { Replace = true }));
+                var empty = rawEmpty as EquipRefineReplaceResponse;
+                result.Check(empty != null && empty.Code == -2,
+                    "refine.noPending=" + (empty == null ? "null" : empty.Code));
+
+                // 2) 造一件紫色武器，带一条物攻词条
+                ItemService.Instance.GrantReward(role, 101, 1);
+                long uid = FindBagUidByCfg(role, 101);
+                result.Check(uid > 0, "refine.hasItem=" + uid);
+                if (uid <= 0)
+                    return result;
+
+                ItemInfo item = null;
+                for (int i = 0; i < role.BagData.ItemList.Count; i++)
+                {
+                    if (role.BagData.ItemList[i] != null && role.BagData.ItemList[i].Uid == uid)
+                    {
+                        item = role.BagData.ItemList[i];
+                        break;
+                    }
+                }
+                if (item == null)
+                {
+                    result.Fail("找不到刚发的装备");
+                    return result;
+                }
+                item.Equip = new EquipInfo
+                {
+                    Quality = ItemQuality.PURPLE,
+                    Attributes = new List<Stats>
+                    {
+                        new Stats { attr = pb.Attribute.PHYSICAL_ATTACK, Num = 100 },
+                    },
+                };
+
+                // itemCfg.Quality=1 → Rifinerandom 第 1 档：金币 10000
+                role.Coin = 1000000;
+
+                // 3) 随机洗练
+                object rawRefine = ItemService.Instance.EquipRefine(TCPClientMgr.ProtoSerialize(new EquipRefineRequest
+                {
+                    ItemUid = uid,
+                    Attr = pb.Attribute.PHYSICAL_ATTACK,
+                    Random = true,
+                }));
+                var refine = rawRefine as EquipRefineResponse;
+                result.Check(refine != null && refine.Code == 0,
+                    "refine.ok=" + (refine == null ? "null" : refine.Code + "/" + refine.Error));
+                result.Check(refine != null && refine.NewStats != null
+                        && refine.NewStats.attr != pb.Attribute.INVALID_Attribute
+                        && refine.NewStats.Num > 0,
+                    "refine.newStat=" + (refine == null || refine.NewStats == null
+                        ? "null" : ((int)refine.NewStats.attr + "/" + refine.NewStats.Num)));
+                result.Check(role.Coin == 990000, "refine.cost=" + role.Coin);
+
+                if (refine == null || refine.Code != 0 || refine.NewStats == null)
+                    return result;
+
+                // 4) 确认替换
+                object rawReplace = ItemService.Instance.EquipRefineReplace(
+                    TCPClientMgr.ProtoSerialize(new EquipRefineReplaceRequest { Replace = true }));
+                var replace = rawReplace as EquipRefineReplaceResponse;
+                result.Check(replace != null && replace.Code == 0,
+                    "refine.replace=" + (replace == null ? "null" : replace.Code + "/" + replace.Error));
+
+                int attrCount = item.Equip.Attributes == null ? 0 : item.Equip.Attributes.Count;
+                result.Check(attrCount == 1, "refine.attrCount=" + attrCount);
+                if (attrCount == 1)
+                {
+                    Stats only = item.Equip.Attributes[0];
+                    result.Check(only != null && only.attr == refine.NewStats.attr
+                            && only.Num == refine.NewStats.Num,
+                        "refine.applied=" + (only == null ? "null"
+                            : ((int)only.attr + "/" + only.Num)));
+                }
+
+                // 5) 结果已清空
+                object rawAgain = ItemService.Instance.EquipRefineReplace(
+                    TCPClientMgr.ProtoSerialize(new EquipRefineReplaceRequest { Replace = true }));
+                var again = rawAgain as EquipRefineReplaceResponse;
+                result.Check(again != null && again.Code == -2,
+                    "refine.cleared=" + (again == null ? "null" : again.Code));
+            }
+            finally
+            {
+                role.Coin = oldCoin;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 副本扫荡：VIP 不足被拒 → 次数不足被拒 → 正常扫荡发奖并扣次数。
         /// 对齐原服 dailyMapCopySweep。

@@ -856,6 +856,400 @@ namespace HotUpdateScripts.LocalNet
             return response;
         }
 
+        // ==================== 装备洗练（对齐原服 Player.equipRefine）====================
+
+        /// <summary>洗练临时结果，对齐原服 Player.lastEquipRefine（纯内存，不入档）。</summary>
+        private static long _refineItemUid;
+        private static Attribute _refineOldAttr;
+        private static Attribute _refineNewAttr;
+        private static int _refineNewNum;
+
+        private static readonly System.Random _refineRng = new System.Random();
+
+        /// <summary>[0, max) 随机，对齐原服 global.RandIn。</summary>
+        private static int RandIn(int max)
+        {
+            return max <= 0 ? 0 : _refineRng.Next(max);
+        }
+
+        /// <summary>
+        /// 装备洗练（C2S_EquipRefine）。
+        ///
+        /// 消耗：config.xml 的 Rifinerandom（金币，随机洗练）/ Rifinedirect（钻石，定向洗练），按品质取档。
+        /// 新词条：randomcreat 两层权重 → randomdistrib 取区间 → 按品质掷数值。
+        /// </summary>
+        public object EquipRefine(byte[] req)
+        {
+            EquipRefineRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<EquipRefineRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new EquipRefineResponse { Code = -1, Error = "洗练请求解析失败: " + e.Message };
+            }
+
+            var res = new EquipRefineResponse { Code = 0, Error = "", NewStats = new Stats() };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+            if (request == null || request.ItemUid <= 0)
+            {
+                res.Code = -1;
+                res.Error = "参数错误";
+                return res;
+            }
+
+            ItemInfo item = FindInBag(role.BagData, request.ItemUid);
+            if (item == null || item.Equip == null)
+            {
+                res.Code = -2;
+                res.Error = "装备不存在";
+                return res;
+            }
+
+            bool found = false;
+            if (item.Equip.Attributes != null)
+            {
+                for (int i = 0; i < item.Equip.Attributes.Count; i++)
+                {
+                    Stats st = item.Equip.Attributes[i];
+                    if (st != null && st.attr == request.Attr)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found)
+            {
+                res.Code = -2;
+                res.Error = "该装备没有这条词条";
+                return res;
+            }
+
+            CFGItem_Item itemCfg;
+            try { itemCfg = CFG_Item.GetById(item.CfgId); }
+            catch { itemCfg = null; }
+            if (itemCfg == null)
+            {
+                res.Code = -2;
+                res.Error = "道具配置不存在";
+                return res;
+            }
+
+            int quality = EquipRuleService.ToInt(itemCfg.Quality);
+
+            CFG_XMLConfig.XML_Config.XML_Item_Rifine cost = GetRefineCost(quality, request.Random);
+            if (cost == null || cost.itemid <= 0 || cost.num <= 0)
+            {
+                res.Code = -1;
+                res.Error = "洗练消耗配置缺失";
+                return res;
+            }
+            if (!TryConsumeId(role, cost.itemid, cost.num))
+            {
+                res.Code = -5;
+                res.Error = "洗练消耗不足";
+                return res;
+            }
+
+            Attribute newAttr;
+            int newNum;
+            string rollError;
+            if (!TryRollRefineStat(item, itemCfg, request.Attr, request.Random,
+                    out newAttr, out newNum, out rollError))
+            {
+                res.Code = -1;
+                res.Error = "洗练配置缺失: " + rollError;
+                return res;
+            }
+
+            _refineItemUid = item.Uid;
+            _refineOldAttr = request.Attr;
+            _refineNewAttr = newAttr;
+            _refineNewNum = newNum;
+
+            res.NewStats = new Stats { attr = newAttr, Num = newNum };
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushUserBaseNow();
+            LocalPusher.Instance.PushBagInfoNow();
+            return res;
+        }
+
+        /// <summary>
+        /// 确认/放弃洗练结果（C2S_EquipRefineReplace）。
+        /// replace=true：删掉旧词条、追加新词条、重算属性；无论确认与否都清空临时结果。
+        /// </summary>
+        public object EquipRefineReplace(byte[] req)
+        {
+            EquipRefineReplaceRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<EquipRefineReplaceRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new EquipRefineReplaceResponse { Code = -1, Error = "请求解析失败: " + e.Message };
+            }
+
+            var res = new EquipRefineReplaceResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            if (_refineItemUid <= 0 || _refineNewAttr == 0 || _refineNewNum == 0 || _refineOldAttr == 0)
+            {
+                res.Code = -2;
+                res.Error = "没有待确认的洗练结果";
+                return res;
+            }
+
+            ItemInfo item = FindInBag(role.BagData, _refineItemUid);
+            if (item == null || item.Equip == null)
+            {
+                ResetRefineInfo();
+                res.Code = -2;
+                res.Error = "装备不存在";
+                return res;
+            }
+
+            if (request != null && request.Replace)
+            {
+                var newStats = new List<Stats>();
+                if (item.Equip.Attributes != null)
+                {
+                    for (int i = 0; i < item.Equip.Attributes.Count; i++)
+                    {
+                        Stats st = item.Equip.Attributes[i];
+                        if (st == null || st.attr == _refineOldAttr)
+                            continue;
+                        newStats.Add(st);
+                    }
+                }
+                newStats.Add(new Stats { attr = _refineNewAttr, Num = _refineNewNum });
+                item.Equip.Attributes = newStats;
+
+                RoleStatService.Instance.Recalculate(role, false);
+                SaveCoordinator.Instance.MarkDirty();
+                LocalPusher.Instance.PushStatsNow();
+                LocalPusher.Instance.PushBagInfoNow();
+                LocalPusher.Instance.PushEquipsNow();
+            }
+
+            res.Item = item;
+            ResetRefineInfo();
+            return res;
+        }
+
+        private static void ResetRefineInfo()
+        {
+            _refineItemUid = 0;
+            _refineOldAttr = 0;
+            _refineNewAttr = 0;
+            _refineNewNum = 0;
+        }
+
+        /// <summary>取洗练消耗（random=true 走 Rifinerandom，否则 Rifinedirect）。</summary>
+        private static CFG_XMLConfig.XML_Config.XML_Item_Rifine GetRefineCost(int quality, bool random)
+        {
+            try
+            {
+                CFG_XMLConfig.XML_Config xml = CFG_XMLConfig.xmlConfig;
+                if (xml == null) return null;
+                Dictionary<int, CFG_XMLConfig.XML_Config.XML_Item_Rifine> dic =
+                    random ? xml.RifineRandomDic : xml.RifineDirectDic;
+                if (dic == null) return null;
+                CFG_XMLConfig.XML_Config.XML_Item_Rifine cost;
+                return dic.TryGetValue(quality, out cost) ? cost : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 掷出一条新词条，严格对齐原服 Player.equipRefineRandom。
+        /// </summary>
+        private static bool TryRollRefineStat(ItemInfo item, CFGItem_Item itemCfg,
+            Attribute targetAttr, bool random, out Attribute newAttr, out int newNum, out string error)
+        {
+            newAttr = 0;
+            newNum = 0;
+            error = "";
+
+            int setid = EquipRuleService.ToInt(itemCfg.Equiptype);
+            CFGItem_RandomCreat createCfg = CFG_RandomCreat.GetByQualitySet(
+                (int)item.Equip.Quality, (int)(itemCfg.Levellimit ?? 0), setid);
+            if (createCfg == null)
+            {
+                error = "randomcreat 无匹配行 q=" + (int)item.Equip.Quality
+                    + " lv=" + (int)(itemCfg.Levellimit ?? 0) + " set=" + setid;
+                return false;
+            }
+            if (createCfg.RefingKeys == null || createCfg.RefingWeights == null
+                || createCfg.RefingKeys.Length == 0
+                || createCfg.RefingKeys.Length != createCfg.RefingWeights.Length)
+            {
+                error = "Refing 配置为空";
+                return false;
+            }
+
+            // 1) 掷档位。原服加载时把 RefingSet 的权重做成了前缀和（bootstrap/init.go:1687），
+            //    配置里存的是各项权重，这里必须累加再比。
+            int attrPart = 0;
+            int partRoll = RandIn(10000);
+            int acc = 0;
+            for (int i = 0; i < createCfg.RefingKeys.Length; i++)
+            {
+                acc += createCfg.RefingWeights[i];
+                if (partRoll < acc)
+                {
+                    attrPart = createCfg.RefingKeys[i];
+                    break;
+                }
+            }
+            if (attrPart == 0)
+            {
+                error = "档位未命中 roll=" + partRoll + " sum=" + acc;
+                return false;
+            }
+
+            CFGItem_RandomDistrib distribCfg;
+
+            if (random)
+            {
+                if (createCfg.KindNumKeys == null || createCfg.KindNumWeights == null
+                    || createCfg.KindNumKeys.Length == 0
+                    || createCfg.KindNumKeys.Length != createCfg.KindNumWeights.Length)
+                {
+                    error = "KindNum 配置为空";
+                    return false;
+                }
+
+                // 2a) 过滤掉「装备已有该属性种类、且不是本次要洗的属性」
+                var candKeys = new List<int>();
+                var candWeights = new List<int>();
+                for (int i = 0; i < createCfg.KindNumKeys.Length; i++)
+                {
+                    int key = createCfg.KindNumKeys[i];
+                    int kind = key / 1000;
+
+                    bool blocked = false;
+                    if (item.Equip.Attributes != null)
+                    {
+                        for (int j = 0; j < item.Equip.Attributes.Count; j++)
+                        {
+                            Stats st = item.Equip.Attributes[j];
+                            if (st != null && (int)st.attr == kind && (int)targetAttr != key)
+                            {
+                                blocked = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!blocked)
+                    {
+                        candKeys.Add(key);
+                        candWeights.Add(createCfg.KindNumWeights[i]);
+                    }
+                }
+                if (candKeys.Count == 0)
+                {
+                    error = "候选属性被全部过滤";
+                    return false;
+                }
+
+                // 原服：先按权重降序取最大值掷点，再升序找第一个 roll < weight
+                int maxWeight = 0;
+                for (int i = 0; i < candWeights.Count; i++)
+                {
+                    if (candWeights[i] > maxWeight) maxWeight = candWeights[i];
+                }
+                int roll = RandIn(maxWeight);
+
+                int distribUid = 0;
+                int bestW = int.MaxValue;
+                for (int i = 0; i < candWeights.Count; i++)
+                {
+                    if (roll < candWeights[i] && candWeights[i] < bestW)
+                    {
+                        bestW = candWeights[i];
+                        distribUid = candKeys[i];
+                    }
+                }
+                if (distribUid == 0)
+                {
+                    error = "属性种类未命中 roll=" + roll;
+                    return false;
+                }
+
+                distribCfg = CFG_RandomDistrib.GetByUuidAndPart(distribUid, attrPart);
+                if (distribCfg == null)
+                {
+                    error = "randomdistrib 无 uuid=" + distribUid + " part=" + attrPart;
+                    return false;
+                }
+            }
+            else
+            {
+                // 2b) 定向：直接按目标属性 + 档位查
+                distribCfg = CFG_RandomDistrib.GetByKindAndPart((int)targetAttr, attrPart);
+                if (distribCfg == null)
+                {
+                    error = "randomdistrib 无 kind=" + (int)targetAttr + " part=" + attrPart;
+                    return false;
+                }
+            }
+
+            int min, max;
+            if (!TryGetQualityInterval(distribCfg, (int)item.Equip.Quality, out min, out max))
+            {
+                error = "品质区间为空 q=" + (int)item.Equip.Quality + " uuid=" + distribCfg.UUID;
+                return false;
+            }
+
+            int value = max <= min ? max : RandIn(max - min) + 1 + min;
+            if (value <= 0)
+            {
+                error = "数值为0 min=" + min + " max=" + max;
+                return false;
+            }
+
+            newAttr = (Attribute)distribCfg.Kind;
+            newNum = value;
+            return true;
+        }
+
+        /// <summary>
+        /// 按装备品质取洗练区间。品质枚举：WHITE=1 GREEN=2 BLUE=3 PURPLE=4 PINK=5 ORANGE=6 RED=7 Rainbow=8，
+        /// 原服 Interval 只建了 PURPLE 及以上（BLUE 被注释），对应关系见 bootstrap/init.go。
+        /// </summary>
+        private static bool TryGetQualityInterval(CFGItem_RandomDistrib cfg, int quality,
+            out int min, out int max)
+        {
+            switch (quality)
+            {
+                case (int)ItemQuality.PURPLE: min = cfg.PieceMin_Purple; max = cfg.PieceMax_Purple; break;
+                case (int)ItemQuality.PINK: min = cfg.PieceMin_Pink; max = cfg.PieceMax_Pink; break;
+                case (int)ItemQuality.ORANGE: min = cfg.PieceMin_Gold; max = cfg.PieceMax_Gold; break;
+                case (int)ItemQuality.RED: min = cfg.PieceMin_Red; max = cfg.PieceMax_Red; break;
+                case (int)ItemQuality.Rainbow: min = cfg.PieceMin_Yellow; max = cfg.PieceMax_Yellow; break;
+                default: min = 0; max = 0; break;
+            }
+            return max > 0 || min > 0;
+        }
+
         public object AutoDisassembly(byte[] req)
         {
             AutoDisassemblyRequest request;

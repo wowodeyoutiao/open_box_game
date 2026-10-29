@@ -47,6 +47,7 @@
   <ItemGroup>
     <Compile Include="Config\CFG_All.cs" />
     <Compile Include="Config\CFG_ItemUse.cs" />
+    <Compile Include="Config\CFG_RandomCreat.cs" />
     <Compile Include="Config\CFG_BoxLevel.cs" />
     <Compile Include="Config\CFG_OpenBox.cs" />
     <Compile Include="Config\CFG_MainTrigger.cs" />
