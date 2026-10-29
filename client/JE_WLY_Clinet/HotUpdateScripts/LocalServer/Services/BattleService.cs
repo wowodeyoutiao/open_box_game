@@ -1467,6 +1467,87 @@ namespace HotUpdateScripts.LocalNet
             return res;
         }
 
+        /// <summary>
+        /// 采集/挖矿（对齐原服 RoomManager.Mining → desk 主循环 → Player.mining）。
+        ///
+        /// 玩法：升星石副本(204) / 魂石副本(205) 里的矿点本身就是怪物对象，
+        /// 客户端 checkCollection() 在本地累加 curLifeTime 当作采集进度，
+        /// 满了才发 C2S_Mining。服务端收到后让该目标死亡 —— 掉落走正常击杀链路
+        /// （PushHpAndDie → OnMonsterKilled → RollMonsterDrop），和原服 mon.die(p) 一致。
+        ///
+        /// 原服 desk.go:1101 只在 StarUpStoneFBMap / SoulStoneFBMap 两个分支处理 chMining，
+        /// 其它房间收到请求会被静默丢弃，这里同样只放行这两类。
+        /// </summary>
+        public object Mining(byte[] req)
+        {
+            MiningRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<MiningRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new MiningResponse { Code = -1, Error = "请求解析失败: " + e.Message };
+            }
+
+            var res = new MiningResponse { Code = 0, Error = "" };
+            BattleRuntime runtime = _runtime;
+            if (runtime == null || runtime.Ended)
+            {
+                res.Code = -1;
+                res.Error = "不在战斗中";
+                return res;
+            }
+            if (runtime.Player.Dead)
+            {
+                res.Code = -1;
+                res.Error = "角色已死亡，无法采集";
+                return res;
+            }
+            if (request == null || request.Uid <= 0)
+            {
+                res.Code = -1;
+                res.Error = "参数错误";
+                return res;
+            }
+
+            int roomType = runtime.RoomType;
+            if (roomType != (int)CFG_Room.RoomType.SXS
+                && roomType != (int)CFG_Room.RoomType.HS)
+            {
+                res.Code = -1;
+                res.Error = "当前副本没有可采集的目标";
+                return res;
+            }
+
+            BattleUnit target = null;
+            if (runtime.Monsters != null)
+            {
+                for (int i = 0; i < runtime.Monsters.Count; i++)
+                {
+                    BattleUnit mon = runtime.Monsters[i];
+                    if (mon != null && !mon.Dead && mon.Uid == request.Uid)
+                    {
+                        target = mon;
+                        break;
+                    }
+                }
+            }
+            if (target == null)
+            {
+                res.Code = -1;
+                res.Error = "采集目标不存在或已采集";
+                return res;
+            }
+
+            // 直接判死，掉落/任务打点都由正常击杀链路处理
+            int before = target.Hp;
+            target.Hp = 0;
+            target.Dead = true;
+            PushHpAndDie(runtime, runtime.Player, target, 0, before, false, 0);
+            return res;
+        }
+
         /// <summary>自动战斗开关（客户端托管，服务端只记录 + 校验 VIP 门槛）。</summary>
         private bool _autoPlayEnabled;
 

@@ -143,6 +143,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunRewardExtras());
                 if (scenario == "all" || scenario == "auto_play")
                     cases.Add(RunAutoPlay());
+                if (scenario == "all" || scenario == "mining")
+                    cases.Add(RunMining());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3110,6 +3112,115 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 挖矿：只有升星石(204)/魂石(205)副本能采集；采集即判死，掉落走正常击杀链路。
+        /// 对齐原服 RoomManager.Mining → desk.go 的 StarUpStoneFBMap/SoulStoneFBMap 分支。
+        /// </summary>
+        private static CaseResult RunMining()
+        {
+            var result = new CaseResult("mining");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            int oldLevel = role.Level;
+            int oldVip = role.Vip;
+            int oldResetDay = role.DailyMapResetDay;
+            Dictionary<int, int> oldTimes = role.DailyMapTimes;
+            try
+            {
+                BattleService.Instance.Exit();
+                role.Level = 60;
+                role.Vip = 5;
+                role.DailyMapResetDay = 0;
+                role.DailyMapTimes = new Dictionary<int, int>();
+                EnsureBattlePartner(role);
+
+                // 1) 不在战斗中 → -1
+                object rawNo = BattleService.Instance.Mining(
+                    TCPClientMgr.ProtoSerialize(new MiningRequest { Uid = 1 }));
+                var no = rawNo as MiningResponse;
+                result.Check(no != null && no.Code == -1,
+                    "mining.noBattle=" + (no == null ? "null" : no.Code));
+
+                // 2) 进升星石副本（204, RoomType=11）
+                int sxsRoom = 204;
+                int sxsType = (int)CFG_Room.RoomType.SXS;
+                BattleService.Instance.GetDailyMapTimes(role, sxsType);
+                role.DailyMapTimes[sxsType] = 2;
+
+                JoinDeskResponse enter = BattleService.Instance.Enter(new JoinDeskRequest
+                {
+                    RoomId = sxsRoom,
+                    BattleId = 0,
+                });
+                result.Check(enter != null && enter.Code == 0,
+                    "mining.enter=" + (enter == null ? "null" : enter.Code + "/" + enter.Error));
+                if (enter == null || enter.Code != 0)
+                    return result;
+
+                // 3) 取一只活怪当矿点
+                long uid;
+                double mx, my;
+                bool has = BattleService.Instance.TryGetNearestAliveMonster(out uid, out mx, out my);
+                result.Check(has && uid > 0, "mining.target=" + uid);
+                if (!has || uid <= 0)
+                    return result;
+
+                // 4) 采集 → 目标应当被判死
+                object rawMine = BattleService.Instance.Mining(
+                    TCPClientMgr.ProtoSerialize(new MiningRequest { Uid = uid }));
+                var mine = rawMine as MiningResponse;
+                result.Check(mine != null && mine.Code == 0,
+                    "mining.ok=" + (mine == null ? "null" : mine.Code + "/" + mine.Error));
+
+                // 5) 同一个目标重复采集 → -1（已采集）
+                object rawAgain = BattleService.Instance.Mining(
+                    TCPClientMgr.ProtoSerialize(new MiningRequest { Uid = uid }));
+                var again = rawAgain as MiningResponse;
+                result.Check(again != null && again.Code == -1,
+                    "mining.again=" + (again == null ? "null" : again.Code));
+
+                BattleService.Instance.Exit();
+
+                // 6) 非采集副本（战役 600）→ -1
+                JoinDeskResponse enter600 = BattleService.Instance.Enter(new JoinDeskRequest
+                {
+                    RoomId = 600,
+                    BattleId = 0,
+                });
+                if (enter600 != null && enter600.Code == 0)
+                {
+                    long uid2;
+                    double x2, y2;
+                    if (BattleService.Instance.TryGetNearestAliveMonster(out uid2, out x2, out y2) && uid2 > 0)
+                    {
+                        object rawWrong = BattleService.Instance.Mining(
+                            TCPClientMgr.ProtoSerialize(new MiningRequest { Uid = uid2 }));
+                        var wrong = rawWrong as MiningResponse;
+                        result.Check(wrong != null && wrong.Code == -1,
+                            "mining.wrongRoom=" + (wrong == null ? "null" : wrong.Code));
+                    }
+                }
+            }
+            finally
+            {
+                BattleService.Instance.Exit();
+                role.Level = oldLevel;
+                role.Vip = oldVip;
+                role.DailyMapResetDay = oldResetDay;
+                role.DailyMapTimes = oldTimes;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 自动战斗：VIP 门槛校验（配置 autobattle.viplevel=2）。
         /// 托管逻辑本身在客户端（MainRole.Update → AutoWalkOrAttack → sendAutoPath），
