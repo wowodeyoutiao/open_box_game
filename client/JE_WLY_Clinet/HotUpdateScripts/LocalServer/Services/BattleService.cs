@@ -28,6 +28,14 @@ namespace HotUpdateScripts.LocalNet
         private const int DeadSettleDelayMs = 1500;
         /// <summary>每日副本的死亡等待期（原服 desk.go：60 秒内可复活，超时才判负）。</summary>
         private const int DailyDeadWaitMs = 60000;
+
+        /// <summary>
+        /// 待翻倍奖励（原服 Player.reward / Player.roomType）。
+        /// 结算时记下来，玩家在结算界面点「双倍」才真正发放第二份；关掉界面就丢弃。
+        /// 必须放在服务级而不是 runtime 上 —— Settle 之后 _runtime 已经清空。
+        /// </summary>
+        private Dictionary<int, long> _pendingDoubleReward;
+        private int _pendingDoubleRoomType;
         private const int WinSettleDelayMs = 3000;
         /// <summary>客户端 monster.moveTo 是 0.8s 补间，推太密会互相打断，这里做节流。</summary>
         private const int MinMovePushIntervalMs = 700;
@@ -1441,6 +1449,10 @@ namespace HotUpdateScripts.LocalNet
                 items.Add(new ItemInfo { CfgId = kv.Key, Num = (int)kv.Value });
             }
 
+            // 扫荡结果也支持结算界面点「双倍」
+            _pendingDoubleReward = new Dictionary<int, long>(rewards);
+            _pendingDoubleRoomType = roomType;
+
             SaveCoordinator.Instance.MarkDirty();
             LocalPusher.Instance.PushUserBaseNow();
             LocalPusher.Instance.PushBagInfoNow();
@@ -1453,6 +1465,273 @@ namespace HotUpdateScripts.LocalNet
                 Items = items,
             });
             return res;
+        }
+
+        /// <summary>自动购买加时的开关（原服 Player.autoBuyInstanceTime）。</summary>
+        private bool _autoBuyInstanceTime;
+
+        /// <summary>
+        /// 副本加时（对齐原服 RoomManager.InstanceTimeAdd）。
+        ///
+        /// 原服只对守卫海岛(PVE_Peace)和战役(PVE_War)生效，扣体力换 expirationTime。
+        /// 本地守卫海岛用的是「每日挂机总时长」模型，所以换算成「把今天已用的时长还回去」：
+        ///   AfkDailySec -= buytime_peace
+        /// 消耗与时长读 config.xml 的 &lt;energy consumeenergy_peace / buytime_peace /&gt;。
+        /// EnergyNum=0 时只记录自动购买开关（原服同）。
+        /// </summary>
+        public object InstanceTimeAdd(byte[] req)
+        {
+            InstanceTimeAddRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<InstanceTimeAddRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new InstanceTimeAddResponse { Code = -1, Error = "请求解析失败: " + e.Message };
+            }
+
+            var res = new InstanceTimeAddResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            CFG_XMLConfig.XML_Config xml = CFG_XMLConfig.xmlConfig;
+            if (xml == null || xml.Energy == null)
+            {
+                res.Code = -1;
+                res.Error = "体力配置缺失";
+                return res;
+            }
+
+            int needEnergy = xml.Energy.consumeenergy_peace;
+            int addSec = xml.Energy.buytime_peace;
+            if (needEnergy <= 0 || addSec <= 0)
+            {
+                res.Code = -1;
+                res.Error = "加时配置无效";
+                return res;
+            }
+
+            bool buy = request != null && request.EnergyNum != 0;
+            if (buy)
+            {
+                if (role.Energy < needEnergy)
+                {
+                    res.Code = -2;
+                    res.Error = "体力不足";
+                    return res;
+                }
+                role.Energy -= needEnergy;
+                LocalData.Instance.Energy = role.Energy;
+
+                EnsureAfkDaily(role);
+                role.AfkDailySec = Math.Max(0, role.AfkDailySec - addSec);
+
+                SaveCoordinator.Instance.MarkDirty();
+                LocalPusher.Instance.PushUserBaseNow();
+            }
+            else
+            {
+                _autoBuyInstanceTime = request != null && request.AutoBuy;
+            }
+
+            res.InstanceTimeLeft = GetAfkLeftSec(role);
+            res.AutoBuy = _autoBuyInstanceTime;
+            return res;
+        }
+
+        /// <summary>
+        /// 双倍奖励（对齐原服 Player.dailyMapDoubleReward）。
+        ///
+        /// 结算/扫荡时把奖励记在 _pendingDoubleReward 里，玩家在结算界面点「双倍」才花点券
+        /// 把这一份再发一次。Double=false 表示放弃翻倍，直接丢弃待领奖励。
+        /// 消耗读 dailymap 段的 doubleaccess id/num（每日副本六类都有配）。
+        /// </summary>
+        public object DoubleReward(byte[] req)
+        {
+            DoubleRewardRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<DoubleRewardRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new DoubleRewardResponse { Code = -1, Error = "请求解析失败: " + e.Message };
+            }
+
+            var res = new DoubleRewardResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            bool wantDouble = request != null && request.Double;
+
+            // 放弃翻倍：清空待领奖励（原服 p.reward = []）
+            if (!wantDouble)
+            {
+                _pendingDoubleReward = null;
+                _pendingDoubleRoomType = 0;
+                return res;
+            }
+
+            if (_pendingDoubleReward == null || _pendingDoubleReward.Count == 0 || _pendingDoubleRoomType <= 0)
+            {
+                res.Code = -2;
+                res.Error = "没有可翻倍的奖励";
+                return res;
+            }
+
+            CFG_XMLConfig.XML_Config.XML_DailyMap cfg = GetDailyMapConfig(_pendingDoubleRoomType);
+            if (cfg == null || cfg.doubleaccessID <= 0 || cfg.doubleaccessNum <= 0)
+            {
+                res.Code = -2;
+                res.Error = "该副本不支持双倍奖励";
+                return res;
+            }
+
+            if (!ItemService.Instance.TryConsumeId(role, cfg.doubleaccessID, cfg.doubleaccessNum))
+            {
+                res.Code = -1;
+                res.Error = "点券不足，无法双倍";
+                return res;
+            }
+
+            // 把同一份奖励再发一次
+            var doubled = _pendingDoubleReward;
+            _pendingDoubleReward = null;
+            _pendingDoubleRoomType = 0;
+
+            foreach (KeyValuePair<int, long> kv in doubled)
+            {
+                if (kv.Key <= 0 || kv.Value <= 0)
+                    continue;
+                ItemService.Instance.GrantReward(role, kv.Key, kv.Value);
+            }
+
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushUserBaseNow();
+            LocalPusher.Instance.PushBagInfoNow();
+            LocalPusher.Instance.PushStatsNow();
+            return res;
+        }
+
+        /// <summary>
+        /// 选择守卫海岛的挂机倍率（对齐原服 Player.GuardIslandMultiplier）。
+        ///
+        /// ⚠️ 客户端 TcpC.C2S_GuardIslandMultiplier() 固定发 ID=0（Proto/TcpC.cs:387），
+        ///    界面里的 ToggleIdx 并没有带上来。所以这里对 ID&lt;=0 做回退：
+        ///    取倍率最低的那档（type=1 免费档），保证玩家点「免费倍率」能生效。
+        ///
+        /// 原服按 type 分支：免费/看广告/道具/充值 都是直接写入 AfkMultiplierID
+        /// （道具和充值那两段的扣费逻辑在原服就是注释掉的）。
+        /// </summary>
+        public object GuardIslandMultiplier(byte[] req)
+        {
+            GuardIslandMultiplierRequest request;
+            try
+            {
+                request = JEngine.MyNet.TCPClientMgr.ProtoDeSerialize<GuardIslandMultiplierRequest>(req);
+            }
+            catch (System.Exception e)
+            {
+                return new GuardIslandMultiplierResponse { Code = -1, Error = "请求解析失败: " + e.Message };
+            }
+
+            var res = new GuardIslandMultiplierResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            CFG_XMLConfig.XML_Config xml = CFG_XMLConfig.xmlConfig;
+            if (xml == null || xml.GuardIslandDic == null || xml.GuardIslandDic.Count == 0)
+            {
+                res.Code = -1;
+                res.Error = "守卫海岛倍率配置缺失";
+                return res;
+            }
+
+            long wantId = request == null ? 0 : request.ID;
+            CFG_XMLConfig.XML_Config.GuardIslandItem cfg = FindGuardIslandMultiplier(xml, wantId);
+            if (cfg == null && wantId <= 0)
+                cfg = FindFreeGuardIslandMultiplier(xml);
+            if (cfg == null)
+            {
+                res.Code = -1;
+                res.Error = "倍率配置不存在: " + wantId;
+                return res;
+            }
+
+            // 原服用 -1 表示「未设置」，免费档的 id 本身就是 0。
+            // 本地把「0 = 免费档」当默认值（EnsureAfkDaily 也重置成 0），
+            // 所以只有「已经选了非免费档、还想换另一个」才拒绝。
+            if (role.AfkMultiplierID != 0 && role.AfkMultiplierID != cfg.id)
+            {
+                res.Code = -1;
+                res.Error = "今日已选择过挂机倍率";
+                return res;
+            }
+
+            role.AfkMultiplierID = cfg.id;
+            res.ID = cfg.id;
+            SaveCoordinator.Instance.MarkDirty();
+            LocalPusher.Instance.PushUserBaseNow();
+            return res;
+        }
+
+        /// <summary>按配置里的 id 字段找倍率（原服 GuardIslandCfg[record.ID]）。</summary>
+        private static CFG_XMLConfig.XML_Config.GuardIslandItem FindGuardIslandMultiplier(
+            CFG_XMLConfig.XML_Config xml, long id)
+        {
+            if (id <= 0)
+                return null;
+            foreach (KeyValuePair<int, CFG_XMLConfig.XML_Config.GuardIslandItem> kv in xml.GuardIslandDic)
+            {
+                CFG_XMLConfig.XML_Config.GuardIslandItem item = kv.Value;
+                if (item != null && item.id == (int)id)
+                    return item;
+            }
+            return null;
+        }
+
+        /// <summary>回退：倍率最低的免费档（type=1），客户端 ID=0 时用。</summary>
+        private static CFG_XMLConfig.XML_Config.GuardIslandItem FindFreeGuardIslandMultiplier(
+            CFG_XMLConfig.XML_Config xml)
+        {
+            CFG_XMLConfig.XML_Config.GuardIslandItem best = null;
+            foreach (KeyValuePair<int, CFG_XMLConfig.XML_Config.GuardIslandItem> kv in xml.GuardIslandDic)
+            {
+                CFG_XMLConfig.XML_Config.GuardIslandItem item = kv.Value;
+                if (item == null || item.type != 1)
+                    continue;
+                if (best == null || item.multiplier < best.multiplier)
+                    best = item;
+            }
+            // 没有 type=1 就退而取倍率最低的那条，避免玩家卡在选不了倍率
+            if (best == null)
+            {
+                foreach (KeyValuePair<int, CFG_XMLConfig.XML_Config.GuardIslandItem> kv in xml.GuardIslandDic)
+                {
+                    CFG_XMLConfig.XML_Config.GuardIslandItem item = kv.Value;
+                    if (item == null)
+                        continue;
+                    if (best == null || item.multiplier < best.multiplier)
+                        best = item;
+                }
+            }
+            return best;
         }
 
         /// <summary>取第 times 次复活的消耗配置；没有该档返回 null。</summary>
@@ -1878,7 +2157,14 @@ namespace HotUpdateScripts.LocalNet
                         continue;
                     ItemService.Instance.GrantReward(role, award.id, award.num);
                     result.Items.Add(new ItemInfo { CfgId = award.id, Num = award.num });
+
+                    if (_pendingDoubleReward == null)
+                        _pendingDoubleReward = new Dictionary<int, long>();
+                    long existNum;
+                    _pendingDoubleReward[award.id] = _pendingDoubleReward.TryGetValue(award.id, out existNum)
+                        ? existNum + award.num : award.num;
                 }
+                _pendingDoubleRoomType = runtime.RoomType;
 
                 bool isBossBattle = runtime.Cfg.Copytype == (int)CFG_Room.RoomType.Boss;
                 bool isTowerBattle = runtime.Cfg.Copytype == (int)CFG_Room.RoomType.SLTower;

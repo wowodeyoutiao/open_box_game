@@ -139,6 +139,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunCopySweep());
                 if (scenario == "all" || scenario == "refine")
                     cases.Add(RunEquipRefine());
+                if (scenario == "all" || scenario == "reward_extras")
+                    cases.Add(RunRewardExtras());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3106,6 +3108,123 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 三个小功能：守卫海岛倍率 / 双倍奖励 / 副本加时。
+        /// </summary>
+        private static CaseResult RunRewardExtras()
+        {
+            var result = new CaseResult("reward_extras");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            long oldCoin = role.Coin;
+            long oldCoupon = role.Coupon;
+            long oldEnergy = role.Energy;
+            long oldAfkId = role.AfkMultiplierID;
+            int oldAfkSec = role.AfkDailySec;
+            int oldAfkDay = role.AfkResetDay;
+            int oldVip = role.Vip;
+            int oldLevel = role.Level;
+            int oldResetDay = role.DailyMapResetDay;
+            Dictionary<int, int> oldTimes = role.DailyMapTimes;
+            try
+            {
+                int today = int.Parse(DateTime.Now.ToString("yyyyMMdd"));
+                role.Level = 45;
+                role.Vip = 5;
+                role.DailyMapResetDay = 0;
+                role.DailyMapTimes = new Dictionary<int, int>();
+                role.AfkResetDay = today;
+
+                // ---- 1) 守卫海岛倍率 ----
+                // 客户端固定传 ID=0（免费档，配置里 id 就是 0），服务端应接受
+                role.AfkMultiplierID = 0;
+                object rawM = BattleService.Instance.GuardIslandMultiplier(
+                    TCPClientMgr.ProtoSerialize(new GuardIslandMultiplierRequest { ID = 0 }));
+                var m = rawM as GuardIslandMultiplierResponse;
+                result.Check(m != null && m.Code == 0,
+                    "extra.multiplierFree=" + (m == null ? "null" : m.Code + "/" + m.Error)
+                        + " id=" + role.AfkMultiplierID);
+
+                // 选一个具体档位（26001 = 看广告 1.5 倍），验证真的写进存档
+                object rawM2 = BattleService.Instance.GuardIslandMultiplier(
+                    TCPClientMgr.ProtoSerialize(new GuardIslandMultiplierRequest { ID = 26001 }));
+                var m2 = rawM2 as GuardIslandMultiplierResponse;
+                result.Check(m2 != null && m2.Code == 0 && role.AfkMultiplierID == 26001,
+                    "extra.multiplierSet=" + (m2 == null ? "null" : m2.Code + "/" + m2.Error)
+                        + " id=" + role.AfkMultiplierID);
+
+                // ---- 2) 双倍奖励：没有待领奖励时被拒 ----
+                // 先清空可能被其它场景（扫荡/战斗结算）留下的待领状态
+                BattleService.Instance.DoubleReward(
+                    TCPClientMgr.ProtoSerialize(new DoubleRewardRequest { Double = false }));
+                object rawD0 = BattleService.Instance.DoubleReward(
+                    TCPClientMgr.ProtoSerialize(new DoubleRewardRequest { Double = true }));
+                var d0 = rawD0 as DoubleRewardResponse;
+                result.Check(d0 != null && d0.Code == -2,
+                    "extra.noPending=" + (d0 == null ? "null" : d0.Code));
+
+                // ---- 3) 扫荡一次，造出待领奖励 ----
+                role.Coin = 0;
+                role.Coupon = 100000;
+                BattleService.Instance.GetDailyMapTimes(role, (int)CFG_Room.RoomType.Gold);
+                role.DailyMapTimes[(int)CFG_Room.RoomType.Gold] = 2;
+                object rawS = BattleService.Instance.CopySweep(TCPClientMgr.ProtoSerialize(new CopySweepRequest
+                {
+                    RoomId = 201,
+                    SweepTimes = 1,
+                }));
+                var sweep = rawS as CopySweepResponse;
+                result.Check(sweep != null && sweep.Code == 0,
+                    "extra.sweep=" + (sweep == null ? "null" : sweep.Code + "/" + sweep.Error));
+                long coinAfterSweep = role.Coin;
+                long couponBefore = role.Coupon;
+
+                // ---- 4) 双倍：再发一份，扣点券 2000（金币副本 doubleaccess）----
+                object rawD1 = BattleService.Instance.DoubleReward(
+                    TCPClientMgr.ProtoSerialize(new DoubleRewardRequest { Double = true }));
+                var d1 = rawD1 as DoubleRewardResponse;
+                result.Check(d1 != null && d1.Code == 0,
+                    "extra.double=" + (d1 == null ? "null" : d1.Code + "/" + d1.Error));
+                result.Check(role.Coin == coinAfterSweep * 2, "extra.doubleCoin=" + role.Coin);
+                result.Check(role.Coupon == couponBefore - 2000, "extra.doubleCost=" + role.Coupon);
+
+                // ---- 5) 副本加时：扣体力换挂机时长 ----
+                role.Energy = 100;
+                role.AfkDailySec = 600;
+                role.AfkResetDay = today;
+                object rawT = BattleService.Instance.InstanceTimeAdd(
+                    TCPClientMgr.ProtoSerialize(new InstanceTimeAddRequest { EnergyNum = 1 }));
+                var t = rawT as InstanceTimeAddResponse;
+                result.Check(t != null && t.Code == 0,
+                    "extra.timeAdd=" + (t == null ? "null" : t.Code + "/" + t.Error));
+                result.Check(role.Energy == 94, "extra.energy=" + role.Energy);
+                result.Check(role.AfkDailySec == 300, "extra.afkSec=" + role.AfkDailySec);
+            }
+            finally
+            {
+                role.Coin = oldCoin;
+                role.Coupon = oldCoupon;
+                role.Energy = oldEnergy;
+                role.AfkMultiplierID = oldAfkId;
+                role.AfkDailySec = oldAfkSec;
+                role.AfkResetDay = oldAfkDay;
+                role.Vip = oldVip;
+                role.Level = oldLevel;
+                role.DailyMapResetDay = oldResetDay;
+                role.DailyMapTimes = oldTimes;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 装备洗练：配置可加载 → 随机洗练产出新词条 → 确认替换后旧词条消失、新词条生效。
         /// 对齐原服 Player.equipRefine / equipRefineReplace。

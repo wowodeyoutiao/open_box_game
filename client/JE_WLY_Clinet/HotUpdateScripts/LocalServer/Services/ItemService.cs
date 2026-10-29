@@ -1606,6 +1606,12 @@ namespace HotUpdateScripts.LocalNet
                     role.Coin -= num;
                     LocalData.Instance.Gold = role.Coin;
                     return true;
+                case 6:
+                    // 体力（原服 constant.ItemTypeEnergy = 6）
+                    if (role.Energy < num) return false;
+                    role.Energy -= num;
+                    LocalData.Instance.Energy = role.Energy;
+                    return true;
                 case 4:
                     if (role.Soul < num) return false;
                     role.Soul -= num;
@@ -1686,6 +1692,10 @@ namespace HotUpdateScripts.LocalNet
             }
             switch (cfgId)
             {
+                case 6:
+                    role.Energy += num;
+                    LocalData.Instance.Energy = role.Energy;
+                    return true;
                 case 4:
                     role.Soul += num;
                     LocalData.Instance.Soul = role.Soul;

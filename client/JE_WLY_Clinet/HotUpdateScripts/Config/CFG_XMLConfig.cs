@@ -14,6 +14,9 @@ public class CFG_XMLConfig
     public class XML_Config
     {
         public XML_Item_BaseValue BaseValue;
+
+        /// <summary>体力配置（config.xml 的 &lt;BaseValue&gt;&lt;energy .../&gt;）。</summary>
+        public XML_Energy Energy;
         public XML_Item_SiftQuality[] Sift_Quality;
         public XML_Item_SiftLevel[] Sift_Level;
         /// <summary>
@@ -167,6 +170,25 @@ public class CFG_XMLConfig
         /// <summary>
         /// 基础配置
         /// </summary>
+        /// <summary>
+        /// config.xml 的 &lt;energy fullvalue maxvalue timeinterval
+        /// buytime_peace consumeenergy_peace buytime_war consumeenergy_war /&gt;
+        /// </summary>
+        public class XML_Energy
+        {
+            public int fullvalue;
+            public int maxvalue;
+            public int timeinterval;
+            /// <summary>守卫海岛：花一次体力能加多少秒</summary>
+            public int buytime_peace;
+            /// <summary>守卫海岛：一次加时消耗多少体力</summary>
+            public int consumeenergy_peace;
+            /// <summary>战役副本：花一次体力能加多少秒</summary>
+            public int buytime_war;
+            /// <summary>战役副本：一次加时消耗多少体力</summary>
+            public int consumeenergy_war;
+        }
+
         public class XML_Item_BaseValue
         {
             public XML_Item_Global global;
@@ -969,6 +991,22 @@ public class CFG_XMLConfig
         _xmlConfig = new XML_Config();
         // 解析 BaseValue
         XmlElement baseValueElement = (XmlElement)xmlDoc.SelectSingleNode("/Config/BaseValue");
+
+        // <energy> 段：守卫海岛 / 战役副本的「花体力换时间」换算
+        XmlElement energyElement = (XmlElement)baseValueElement.SelectSingleNode("energy");
+        if (energyElement != null)
+        {
+            _xmlConfig.Energy = new XML_Config.XML_Energy
+            {
+                fullvalue = GetIntAttr(energyElement, "fullvalue"),
+                maxvalue = GetIntAttr(energyElement, "maxvalue"),
+                timeinterval = GetIntAttr(energyElement, "timeinterval"),
+                buytime_peace = GetIntAttr(energyElement, "buytime_peace"),
+                consumeenergy_peace = GetIntAttr(energyElement, "consumeenergy_peace"),
+                buytime_war = GetIntAttr(energyElement, "buytime_war"),
+                consumeenergy_war = GetIntAttr(energyElement, "consumeenergy_war"),
+            };
+        }
         //Debug.Log("Xml 7");
         _xmlConfig.BaseValue = new XML_Config.XML_Item_BaseValue
         {
