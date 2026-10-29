@@ -35,6 +35,7 @@ namespace HotUpdateScripts.LocalNet
             LocalServer.Reg(dict, CmdId.C2S_AutoPlay, OnAutoPlay);
             LocalServer.Reg(dict, CmdId.C2S_Mining, OnMining);
             LocalServer.Reg(dict, CmdId.C2S_GuidanceUpdate, OnGuidanceUpdate);
+            LocalServer.Reg(dict, CmdId.C2S_ChatHistory, OnChatHistory);
             LocalServer.Reg(dict, CmdId.C2S_ItemDisassembly, OnItemDisassembly);
             LocalServer.Reg(dict, CmdId.C2S_AutoDisassembly, OnAutoDisassembly);
 
@@ -156,6 +157,24 @@ namespace HotUpdateScripts.LocalNet
         private static object OnAutoPlay(byte[] req) { return BattleService.Instance.AutoPlay(req); }
         private static object OnMining(byte[] req) { return BattleService.Instance.Mining(req); }
         private static object OnGuidanceUpdate(byte[] req) { return PlayerService.Instance.GuidanceUpdate(req); }
+
+        /// <summary>
+        /// 聊天历史（C2S_ChatHistory）。
+        ///
+        /// 单机版没有聊天频道，但客户端进主界面时会无条件调一次
+        /// （ProtoC.cs:55 LOADCHATHISTORY → UIHall.LoadChatHistyory）。
+        /// 本地不接的话会走 NotImplemented，弹一个「当前功能尚未开放」的飘字，
+        /// 玩家每次进主界面都被打一下。这里返回空历史即可。
+        /// </summary>
+        private static object OnChatHistory(byte[] req)
+        {
+            return new ChatHistoryResponse
+            {
+                Code = 0,
+                Error = "",
+                ChannelHistories = new List<ChatHistoryResponse.ChatChannelHistory>(),
+            };
+        }
         private static object OnItemDisassembly(byte[] req) { return ItemService.Instance.ItemDisassembly(req); }
         private static object OnAutoDisassembly(byte[] req) { return ItemService.Instance.AutoDisassembly(req); }
         private static object OnBattleJoin(byte[] req)
