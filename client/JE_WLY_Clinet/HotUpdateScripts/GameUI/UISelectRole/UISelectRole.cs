@@ -64,6 +64,21 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
             GameObject src = _roleItems[_roleItems.Count - 1];
             GameObject clone = UnityEngine.Object.Instantiate(src, root);
             clone.name = "itemRole" + _roleItems.Count;
+
+            // 按上一个条目往下排开。prefab 里这些条目是手动摆位的、没有 LayoutGroup，
+            // 直接克隆会全部叠在同一处，所以这里手动算 Y 偏移。
+            RectTransform srcRt = src.GetComponent<RectTransform>();
+            RectTransform cloneRt = clone.GetComponent<RectTransform>();
+            if (srcRt != null && cloneRt != null)
+            {
+                float step = Mathf.Max(srcRt.sizeDelta.y, 56f) + 10f;
+                cloneRt.anchorMin = srcRt.anchorMin;
+                cloneRt.anchorMax = srcRt.anchorMax;
+                cloneRt.pivot = srcRt.pivot;
+                cloneRt.sizeDelta = srcRt.sizeDelta;
+                cloneRt.anchoredPosition = srcRt.anchoredPosition + new Vector2(0f, -step);
+            }
+
             clone.SetActive(false);
             _roleItems.Add(clone);
         }
@@ -283,6 +298,13 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
         Button btn = GetView().Btn_Delete;
         if (btn == null)
             return;
+
+        // 这个按钮原本挂在底部工具栏里，父节点只有一条窄条，
+        // 直接给右上锚点只会跑到「那条窄条的右上角」。先提到 Canvas 下，
+        // 锚点才是相对整个屏幕的。
+        Canvas canvas = btn.GetComponentInParent<Canvas>();
+        if (canvas != null && btn.transform.parent != canvas.transform)
+            btn.transform.SetParent(canvas.transform, false);
 
         RectTransform rt = btn.GetComponent<RectTransform>();
         if (rt != null)

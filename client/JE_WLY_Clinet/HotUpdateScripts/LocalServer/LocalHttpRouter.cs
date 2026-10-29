@@ -76,6 +76,13 @@ namespace HotUpdateScripts.LocalNet
             // 走 Factory 是为了拿到请求体里的 uid，按 uid 选中 LocalData.Roles 中的角色
             RegisterFactory("/v1/user/login/select_char", PlayerService.Instance.BuildSelectCharResponse);
             RegisterFactory("/v1/user/login/del_char", PlayerService.Instance.BuildDeleteCharResponse);
+
+            // 数数（第三方数据统计）埋点上报。单机版不上报，直接回成功，
+            // 否则每个开箱 / 引导完成都会弹一次「当前功能尚未开放」。
+            Register("/v1/window/shushu", _ => "{\"Code\":0}");
+            Register("/v1/window/ta_mp_hide", _ => "{\"Code\":0}");
+            Register("/v1/window/completed", _ => "{\"Code\":0}");
+            Register("/v1/window/openBox", _ => "{\"Code\":0}");
             Register("/v1/user/login/realname", OkJson);
 
             // 建角：必须返回完整角色信息，否则客户端 Insert 默认角色 → job=0 → 后续 JobDesDic[0] 崩溃
@@ -147,6 +154,11 @@ namespace HotUpdateScripts.LocalNet
             if (string.IsNullOrEmpty(fullUrl))
                 return RouteResult.NotMatched();
 
+            // 客户端有几个 URL 常量末尾带空格（GameM.ShuShu_OpenBox = "/v1/window/openBox " 等），
+            // 实际发出去会被编码成 %20，导致 EndsWith 匹配不上 → 走 404 → 弹「当前功能尚未开放」。
+            // 这里统一去掉尾随空格和编码后的空格再匹配。
+            fullUrl = NormalizeUrl(fullUrl);
+
             foreach (KeyValuePair<string, JsonProvider> kv in _routes)
             {
                 if (!fullUrl.EndsWith(kv.Key))
@@ -166,6 +178,17 @@ namespace HotUpdateScripts.LocalNet
                 }
             }
             return RouteResult.NotMatched();
+        }
+
+        /// <summary>去掉 URL 尾随空白（含 URL 编码的 %20），避免客户端配置里多打的空格导致匹配失败。</summary>
+        private static string NormalizeUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+                return url;
+            string s = url.Trim();
+            while (s.EndsWith("%20") || s.EndsWith("+"))
+                s = s.Substring(0, s.Length - 3).Trim();
+            return s;
         }
 
         /// <summary>
