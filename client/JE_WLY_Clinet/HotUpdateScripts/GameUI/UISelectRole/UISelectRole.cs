@@ -23,6 +23,57 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
     }
 
     private int Select_Idx = -1;
+
+    /// <summary>
+    /// 角色列表最多显示几个位置。
+    ///
+    /// prefab 里只有 itemRole0/itemRole1 两个节点（原服配置 rolenum=2），
+    /// 所以多出来的位置在 OnEnter 时按 itemRole1 克隆，不动 prefab。
+    /// 上限取 config.xml 的 rolenum，这里留一个兜底值。
+    /// </summary>
+    private const int DefaultRoleSlots = 4;
+
+    private readonly List<GameObject> _roleItems = new List<GameObject>();
+
+    /// <summary>取（必要时克隆出）角色列表条目，保证至少有 need 个。</summary>
+    private void EnsureRoleItems(int need)
+    {
+        Transform root = GetView().Root_Btn;
+        if (root == null)
+            return;
+
+        if (_roleItems.Count == 0)
+        {
+            // 收集 prefab 里现成的 itemRole*
+            for (int i = 0; i < root.childCount; i++)
+            {
+                Transform child = root.GetChild(i);
+                if (child.name.StartsWith("itemRole"))
+                    _roleItems.Add(child.gameObject);
+            }
+        }
+        if (_roleItems.Count == 0)
+            return;   // prefab 结构异常，保持原样
+
+        if (need < _roleItems.Count)
+            need = _roleItems.Count;
+
+        // 不够就克隆最后一个，克隆体沿用同样的子结构（Text / txt_level / icon / on）
+        while (_roleItems.Count < need)
+        {
+            GameObject src = _roleItems[_roleItems.Count - 1];
+            GameObject clone = UnityEngine.Object.Instantiate(src, root);
+            clone.name = "itemRole" + _roleItems.Count;
+            clone.SetActive(false);
+            _roleItems.Add(clone);
+        }
+    }
+
+    private int RoleSlots
+    {
+        get { return _roleItems.Count > 0 ? _roleItems.Count : 2; }
+    }
+
     public override void OnInit()
     {
         GetView().Btn_Creat.onClick.AddListener(delegate { 
@@ -89,9 +140,9 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
     private void RefreshRoles()
     {
         var RoleInfo = RoleM.Instance.LoginCharacterInfo;
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < RoleSlots; i++)
         {
-            GameObject Item = GetView().Root_Btn.transform.Find("itemRole" + i).gameObject;
+            GameObject Item = _roleItems[i];
             Item.SetActive(i < RoleInfo.Count);
             if (i < RoleInfo.Count)
             {
@@ -107,13 +158,15 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
             }
 
         }
-        OnSelectRoleBtnClick(0);
+        // 角色为空时不调 OnSelectRoleBtnClick(0)，否则会越界
+        if (RoleInfo != null && RoleInfo.Count > 0)
+            OnSelectRoleBtnClick(0);
 
     }
 
     public override void OnLayerChange()
     {
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < RoleSlots; i++)
         {
              GameUtil.Instance.SetEffectLayer(GetView().Root_Btn.transform.Find("itemRole" + i + "/on"), _canvasOrder + 1);
         }
@@ -153,10 +206,15 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
     public static string[] JobIconName = { "", "icon_1", "icon_2", "icon_3" };
     private void OnSelectRoleBtnClick(int idx)
     {
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < RoleSlots; i++)
         {
-            GetView().Root_Btn.transform.Find("itemRole" + i).transform.localScale = idx == i ? Vector3.one * 1.2f : Vector3.one;
-            GetView().Root_Btn.transform.Find("itemRole" + i+ "/on").gameObject.SetActive(idx == i);
+            Transform item = GetView().Root_Btn.transform.Find("itemRole" + i);
+            if (item == null)
+                continue;
+            item.localScale = idx == i ? Vector3.one * 1.2f : Vector3.one;
+            Transform on = item.Find("on");
+            if (on != null)
+                on.gameObject.SetActive(idx == i);
         }
 
         Select_Idx = idx;
@@ -195,6 +253,16 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
     }
     public override void OnEnter(params object[] args)
     {
+        int need = DefaultRoleSlots;
+        try
+        {
+            int cfgMax = CFG_XMLConfig.xmlConfig.BaseValue.global.rolenum;
+            if (cfgMax > 0)
+                need = cfgMax;
+        }
+        catch { }
+        EnsureRoleItems(need);
+
         RefreshRoles();
         SetBtnState();
     }
@@ -202,6 +270,12 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
     private void SetBtnState()
     {
         GetView().Btn_Creat.gameObject.SetActive(CFG_XMLConfig.xmlConfig.BaseValue.global.rolenum > RoleM.Instance.LoginCharacterInfo.Count);
+
+        // prefab 里 Button_Delete 的 m_IsActive 是 0（原服靠别处打开），
+        // 单机版没有任何地方会开它，导致删除入口一直看不见。这里显式控制：
+        // 有角色才允许删，一个都没有时隐藏。
+        if (GetView().Btn_Delete != null)
+            GetView().Btn_Delete.gameObject.SetActive(RoleM.Instance.LoginCharacterInfo.Count > 0);
     }
 
     public override void OnExit()

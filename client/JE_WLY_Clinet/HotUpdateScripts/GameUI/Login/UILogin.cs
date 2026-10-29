@@ -312,12 +312,44 @@ public class UILogin :UIBase<UIModelLogin, UIViewLogin>
                 label.text = "开启游戏";
         }
 
+        // prefab 上标的「推荐」角标是纯美术节点、没有 C# 字段，按文本内容兜底隐藏。
+        HideByText(view.transform, "推荐");
+
         // 加载期间保留进度条，加载完成后只留下开始按钮。
         if (ExcelDataManager.Instance.IsLoad)
         {
             Hide(view.slider_Load);
             Hide(view.txt_Load);
         }
+    }
+
+    /// <summary>
+    /// 按文本内容隐藏节点（含其父节点）。
+    /// 适用场景：prefab 里的纯美术标签，没有对应的 C# 字段可以引用。
+    /// </summary>
+    private static void HideByText(Transform root, string text)
+    {
+        if (root == null || string.IsNullOrEmpty(text))
+            return;
+        try
+        {
+            UnityEngine.UI.Text[] texts = root.GetComponentsInChildren<UnityEngine.UI.Text>(true);
+            if (texts == null)
+                return;
+            for (int i = 0; i < texts.Length; i++)
+            {
+                UnityEngine.UI.Text t = texts[i];
+                if (t == null || t.text != text)
+                    continue;
+                // 标签通常「底板 + 文字」两层，一起隐藏
+                Transform parent = t.transform.parent;
+                if (parent != null && parent != root)
+                    parent.gameObject.SetActive(false);
+                else
+                    t.gameObject.SetActive(false);
+            }
+        }
+        catch { }
     }
 
     private static void Hide(UnityEngine.Component component)

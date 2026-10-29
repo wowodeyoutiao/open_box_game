@@ -296,9 +296,29 @@ public static class DevTestPanel
         return txt;
     }
 
-    /// <summary>优先用系统中文字体，拿不到再退回内置 Arial。</summary>
+    /// <summary>
+    /// 取一个可用字体。
+    ///
+    /// 优先**从场景里已有 UI 借**——游戏界面正在显示中文，说明一定有可用字体，
+    /// 比自己 CreateDynamicFontFromOSFont 可靠得多（后者在 ILRuntime 下会拿到 null，
+    /// 表现为按钮只有底色、文字全空）。
+    /// </summary>
     private static Font GetFont()
     {
+        try
+        {
+            Text[] texts = UnityEngine.Object.FindObjectsOfType<Text>();
+            if (texts != null)
+            {
+                for (int i = 0; i < texts.Length; i++)
+                {
+                    if (texts[i] != null && texts[i].font != null)
+                        return texts[i].font;
+                }
+            }
+        }
+        catch { }
+
         try
         {
             Font f = Font.CreateDynamicFontFromOSFont("Microsoft YaHei", 20);
@@ -309,7 +329,9 @@ public static class DevTestPanel
 
         try
         {
-            return Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            Font f2 = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (f2 != null)
+                return f2;
         }
         catch { }
 
