@@ -151,6 +151,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunPartnerP0());
                 if (scenario == "all" || scenario == "sweep_extra")
                     cases.Add(RunSweepExtra());
+                if (scenario == "all" || scenario == "core_missing")
+                    cases.Add(RunCoreMissing());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3124,6 +3126,136 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 补三个此前零覆盖的核心协议：
+        ///   UpgradeLevel  玩家升级 / 伙伴升级（伙伴不能超过主角等级，升级扣主角经验）
+        ///   SkillChange   技能装备到槽 / 卸下
+        ///   PartnerReplace 伙伴上阵替换
+        /// 都走 LocalServer.TryHandle，和客户端真实请求同一条路径。
+        /// </summary>
+        private static CaseResult RunCoreMissing()
+        {
+            var result = new CaseResult("core_missing");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            int oldLevel = role.Level;
+            long oldExp = role.Exp;
+            int[] oldSlots = role.SkillSlots;
+            List<SkillInfo> oldSkills = role.Skills;
+            try
+            {
+                // ================= 1) 玩家升级 =================
+                role.Level = 2;
+                role.Exp = 0;
+                long needExp = LevelUpService.Instance.GetNeedExp(role.Job, role.Level);
+                role.Exp = needExp;
+                LocalHandleResult up = LocalServer.Instance.TryHandle(
+                    (short)CmdId.C2S_UpgradeLevel,
+                    TCPClientMgr.ProtoSerialize(new UpgradeLevelRequest { Type = ObjectType.PLAYER }));
+                var upResp = up == null ? null : up.Response as CommonResponse;
+                result.Check(upResp != null && upResp.Code == 0 && role.Level > 2,
+                    "core.playerUp=" + (upResp == null ? "null" : upResp.Code + "/" + upResp.Error)
+                        + " lv=" + role.Level);
+
+                // ================= 2) 伙伴升级：等级不能超主角 =================
+                EnsureBattlePartner(role);
+                if (role.Partners == null || role.Partners.Count == 0)
+                {
+                    result.Fail("没有可用伙伴");
+                    return result;
+                }
+                PartnerInfo partner = role.Partners[0];
+
+                role.Level = 20;
+                partner.Level = 20;
+                LocalHandleResult pu0 = LocalServer.Instance.TryHandle(
+                    (short)CmdId.C2S_UpgradeLevel,
+                    TCPClientMgr.ProtoSerialize(new UpgradeLevelRequest
+                    {
+                        Type = ObjectType.PARTNER,
+                        Uid = partner.Uid,
+                    }));
+                var pu0Resp = pu0 == null ? null : pu0.Response as CommonResponse;
+                result.Check(pu0Resp != null && pu0Resp.Code == -3,
+                    "core.partnerLevelCap=" + (pu0Resp == null ? "null" : pu0Resp.Code + "/" + pu0Resp.Error));
+
+                // ================= 3) 伙伴升级：成功且扣主角经验 =================
+                partner.Level = 1;
+                role.Level = 30;
+                role.Exp = 99999999;
+                long expBefore = role.Exp;
+                int partnerLvBefore = partner.Level;
+                LocalHandleResult pu1 = LocalServer.Instance.TryHandle(
+                    (short)CmdId.C2S_UpgradeLevel,
+                    TCPClientMgr.ProtoSerialize(new UpgradeLevelRequest
+                    {
+                        Type = ObjectType.PARTNER,
+                        Uid = partner.Uid,
+                    }));
+                var pu1Resp = pu1 == null ? null : pu1.Response as CommonResponse;
+                result.Check(pu1Resp != null && pu1Resp.Code == 0
+                        && partner.Level > partnerLvBefore && role.Exp < expBefore,
+                    "core.partnerUp=" + (pu1Resp == null ? "null" : pu1Resp.Code + "/" + pu1Resp.Error)
+                        + " plv=" + partnerLvBefore + "->" + partner.Level
+                        + " exp=" + expBefore + "->" + role.Exp);
+
+                // ================= 4) 技能切换：装备 → 卸下 =================
+                result.Check(role.Skills != null && role.Skills.Count > 0,
+                    "core.hasSkill=" + (role.Skills == null ? 0 : role.Skills.Count));
+                if (role.Skills != null && role.Skills.Count > 0)
+                {
+                    int skillCfgId = role.Skills[0].CfgId;
+                    role.SkillSlots = new int[13];
+
+                    SkillChangeResponse sc = SkillService.Instance.Change(1, (SkillsSlot)1, skillCfgId);
+                    result.Check(sc != null && sc.Code == 0 && role.SkillSlots[1] == skillCfgId,
+                        "core.skillEquip=" + (sc == null ? "null" : sc.Code + "/" + sc.Error)
+                            + " slot=" + role.SkillSlots[1]);
+
+                    SkillChangeResponse sc2 = SkillService.Instance.Change(2, (SkillsSlot)1, skillCfgId);
+                    result.Check(sc2 != null && sc2.Code == 0 && role.SkillSlots[1] == 0,
+                        "core.skillUnequip=" + (sc2 == null ? "null" : sc2.Code + "/" + sc2.Error)
+                            + " slot=" + role.SkillSlots[1]);
+                }
+
+                // ================= 5) 伙伴替换 =================
+                BattleService.Instance.Exit();
+                CommonResponse pr = PartnerService.Instance.Replace(new PartnerReplaceRequest
+                {
+                    SlotId = PartnerService.FirstPartnerSlotId,
+                    PartnerUid = partner.Uid,
+                });
+                result.Check(pr != null && pr.Code == 0,
+                    "core.partnerReplace=" + (pr == null ? "null" : pr.Code + "/" + pr.Error));
+
+                // 槽位不合法 → 拒绝
+                CommonResponse pr2 = PartnerService.Instance.Replace(new PartnerReplaceRequest
+                {
+                    SlotId = 9999,
+                    PartnerUid = partner.Uid,
+                });
+                result.Check(pr2 != null && pr2.Code != 0,
+                    "core.partnerReplaceBadSlot=" + (pr2 == null ? "null" : pr2.Code + "/" + pr2.Error));
+            }
+            finally
+            {
+                role.Level = oldLevel;
+                role.Exp = oldExp;
+                role.SkillSlots = oldSlots;
+                role.Skills = oldSkills;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 首领/遗迹扫荡（对齐原服 battleMapCopySweep）+ 宝箱升级材料。
         ///   首领：未通关的关卡不能扫；有次数才能扫，扫完扣次数
