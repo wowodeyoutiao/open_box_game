@@ -141,6 +141,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunEquipRefine());
                 if (scenario == "all" || scenario == "reward_extras")
                     cases.Add(RunRewardExtras());
+                if (scenario == "all" || scenario == "auto_play")
+                    cases.Add(RunAutoPlay());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3108,6 +3110,55 @@ namespace HotUpdateScripts.LocalNet.Testing
         /// 签到：列表 → 签到 → 重复签到被拒 → 列表变已签 → 奖励到账。
         /// 对齐原服 internal/web/api/sign.go 的 SignList / SignnAdd。
         /// </summary>
+        /// <summary>
+        /// 自动战斗：VIP 门槛校验（配置 autobattle.viplevel=2）。
+        /// 托管逻辑本身在客户端（MainRole.Update → AutoWalkOrAttack → sendAutoPath），
+        /// 服务端只负责放行。
+        /// </summary>
+        private static CaseResult RunAutoPlay()
+        {
+            var result = new CaseResult("auto_play");
+            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            if (snapshot == null)
+            {
+                result.Fail("当前没有角色");
+                return result;
+            }
+
+            ISaveProvider oldProvider = SaveCoordinator.Instance.SwapProviderForTest(new NoopSaveProvider());
+            LocalRole role = snapshot.Role;
+            int oldVip = role.Vip;
+            try
+            {
+                int needVip = CFG_XMLConfig.xmlConfig != null && CFG_XMLConfig.xmlConfig.BaseValue != null
+                    ? CFG_XMLConfig.xmlConfig.BaseValue.autoPlayVipLv : 0;
+                result.Check(needVip > 0, "auto.needVip=" + needVip);
+
+                // 1) VIP 不足 → -1
+                role.Vip = 0;
+                object raw0 = BattleService.Instance.AutoPlay(new byte[0]);
+                var r0 = raw0 as AutoPlayResponse;
+                result.Check(r0 != null && r0.Code == -1,
+                    "auto.vipLow=" + (r0 == null ? "null" : r0.Code + "/" + r0.Error));
+
+                // 2) VIP 达标 → 放行
+                role.Vip = needVip + 3;
+                object raw1 = BattleService.Instance.AutoPlay(new byte[0]);
+                var r1 = raw1 as AutoPlayResponse;
+                result.Check(r1 != null && r1.Code == 0,
+                    "auto.ok=" + (r1 == null ? "null" : r1.Code + "/" + r1.Error));
+                result.Check(BattleService.Instance.AutoPlayEnabled,
+                    "auto.enabled=" + BattleService.Instance.AutoPlayEnabled);
+            }
+            finally
+            {
+                role.Vip = oldVip;
+                snapshot.Restore();
+                SaveCoordinator.Instance.SwapProviderForTest(oldProvider);
+            }
+            return result;
+        }
+
         /// <summary>
         /// 三个小功能：守卫海岛倍率 / 双倍奖励 / 副本加时。
         /// </summary>

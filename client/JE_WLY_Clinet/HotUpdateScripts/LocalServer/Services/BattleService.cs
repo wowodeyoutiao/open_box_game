@@ -1467,6 +1467,55 @@ namespace HotUpdateScripts.LocalNet
             return res;
         }
 
+        /// <summary>自动战斗开关（客户端托管，服务端只记录 + 校验 VIP 门槛）。</summary>
+        private bool _autoPlayEnabled;
+
+        /// <summary>
+        /// 自动战斗（对齐原服 RoomManager.AutoPlay）。
+        ///
+        /// 原服这个接口**只校验 VIP 等级**（vip &lt; config.xml 的 autobattle.viplevel → -1），
+        /// 真正的托管逻辑在客户端：MainRole.Update() 里 AutoWalkOrAttack() 自动锁敌
+        /// → sendAutoPath() 自动寻路 → 到了自动发 C2S_Attack。
+        /// 所以这里不重复实现托管（否则会和客户端各打一次，伤害翻倍），
+        /// 只做门槛校验并记录开关状态。
+        /// </summary>
+        public object AutoPlay(byte[] req)
+        {
+            var res = new AutoPlayResponse { Code = 0, Error = "" };
+            LocalRole role = LocalData.Instance.Current;
+            if (role == null)
+            {
+                res.Code = -1;
+                res.Error = "没有角色";
+                return res;
+            }
+
+            int needVip = 0;
+            try
+            {
+                CFG_XMLConfig.XML_Config xml = CFG_XMLConfig.xmlConfig;
+                if (xml != null && xml.BaseValue != null)
+                    needVip = xml.BaseValue.autoPlayVipLv;
+            }
+            catch { }
+
+            if (role.Vip < needVip)
+            {
+                res.Code = -1;
+                res.Error = "VIP" + needVip + " 解锁自动战斗";
+                return res;
+            }
+
+            _autoPlayEnabled = true;
+            return res;
+        }
+
+        /// <summary>只读：自动战斗是否已解锁开启，测试用。</summary>
+        public bool AutoPlayEnabled
+        {
+            get { return _autoPlayEnabled; }
+        }
+
         /// <summary>自动购买加时的开关（原服 Player.autoBuyInstanceTime）。</summary>
         private bool _autoBuyInstanceTime;
 
