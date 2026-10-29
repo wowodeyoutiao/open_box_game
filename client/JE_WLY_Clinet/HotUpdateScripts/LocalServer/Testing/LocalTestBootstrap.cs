@@ -1517,7 +1517,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunBoss()
         {
             var result = new CaseResult("boss");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -1661,7 +1661,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunTower()
         {
             var result = new CaseResult("tower");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -1907,7 +1907,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunPassiveSkill()
         {
             var result = new CaseResult("passive");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -2228,7 +2228,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunEquipEnhance()
         {
             var result = new CaseResult("equip_enhance");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -2355,7 +2355,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunEquipStar()
         {
             var result = new CaseResult("equip_star");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -4094,7 +4094,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunItemUse()
         {
             var result = new CaseResult("item_use");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -4546,7 +4546,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunGemDungeon()
         {
             var result = new CaseResult("gem_dungeon");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -6298,7 +6298,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunPlayerEquipMaster()
         {
             var result = new CaseResult("player_master");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
@@ -6541,6 +6541,73 @@ namespace HotUpdateScripts.LocalNet.Testing
             }
         }
 
+        /// <summary>
+        /// 临时造一个干净角色并切到「当前角色」，Dispose 时还原。
+        ///
+        /// 为什么需要：早先的用例直接读 LocalData.Current，断言的是玩家真实存档的
+        /// 装备强化/星级/魂石练度。玩家换个号或者重置存档，这些断言就全挂，
+        /// 而且分不清是代码坏了还是数据变了。
+        ///
+        /// 现在改成：造一个新角色（NewRoleFactory，和建角走同一套逻辑），
+        /// 等级设成用例需要的值，装备用初始那套，测完移出 Roles 并还原 CurrentIdx。
+        /// 玩家真实存档完全不参与。
+        /// </summary>
+        private sealed class TempRoleScope : IDisposable
+        {
+            public LocalRole Role;
+            private readonly LocalData _data;
+            private readonly int _oldIdx;
+            private bool _appended;
+
+            public TempRoleScope(int level, int job = 1, int sex = 1)
+            {
+                _data = LocalData.Instance;
+                if (_data == null || _data.Roles == null)
+                    return;
+
+                _oldIdx = _data.CurrentIdx;
+
+                long itemUid = _data.NextItemUid;
+                string error;
+                long uid = 990000L + (long)(UnityEngine.Random.Range(1, 99999));
+                LocalRole role = NewRoleFactory.Create(uid, "测试角色", job, sex, ref itemUid, out error);
+                if (role == null)
+                {
+                    UnityEngine.Debug.LogWarning("[Test] 临时角色创建失败: " + error);
+                    return;
+                }
+
+                if (level > 0)
+                    role.Level = level;
+
+                _data.Roles.Add(role);
+                _data.CurrentIdx = _data.Roles.Count - 1;
+                _appended = true;
+                Role = role;
+            }
+
+            public bool IsValid
+            {
+                get { return Role != null; }
+            }
+
+            public void Dispose()
+            {
+                if (_data == null)
+                    return;
+                if (_appended && _data.Roles != null)
+                {
+                    // 只有当前 idx 还指着自己时才移除，避免误删别的角色
+                    if (_data.CurrentIdx >= 0 && _data.CurrentIdx < _data.Roles.Count
+                        && ReferenceEquals(_data.Roles[_data.CurrentIdx], Role))
+                    {
+                        _data.Roles.RemoveAt(_data.CurrentIdx);
+                    }
+                }
+                _data.CurrentIdx = _oldIdx;
+            }
+        }
+
         private sealed class BoxSnapshot
         {
             public LocalData Data;
@@ -6565,7 +6632,31 @@ namespace HotUpdateScripts.LocalNet.Testing
             public int Level;
             /// <summary>VIP 等级。加了 VIP 属性计算后，残留的 VIP 会改变战力断言，必须一起快照。</summary>
             public int Vip;
+            /// <summary>非 null 表示这是临时造出来的角色，Restore 时直接丢弃、不做字段回填。</summary>
+            private TempRoleScope _tempScope;
             public ItemInfo[] BagItems;
+
+            /// <summary>
+            /// 造一个干净角色当"当前角色"，用完 Restore 自动丢弃。
+            ///
+            /// 用例只需要把 BoxSnapshot.Capture() 换成 CaptureTemp(等级) 即可，
+            /// 其余结构（备份 / try-finally / Restore）都不用改。
+            /// </summary>
+            public static BoxSnapshot CaptureTemp(int level)
+            {
+                var scope = new TempRoleScope(level);
+                if (!scope.IsValid)
+                    return null;
+
+                BoxSnapshot snapshot = Capture();
+                if (snapshot == null)
+                {
+                    scope.Dispose();
+                    return null;
+                }
+                snapshot._tempScope = scope;
+                return snapshot;
+            }
 
             public static BoxSnapshot Capture()
             {
@@ -6608,6 +6699,15 @@ namespace HotUpdateScripts.LocalNet.Testing
 
             public void Restore()
             {
+                // 临时角色：没有历史状态要回填，直接丢弃即可
+                if (_tempScope != null)
+                {
+                    TempRoleScope scope = _tempScope;
+                    _tempScope = null;
+                    scope.Dispose();
+                    return;
+                }
+
                 Role.BoxLevel = BoxLevel;
                 Role.TreasuerBox = Treasure;
                 Role.BoxOpenItems = Pending;
