@@ -31,7 +31,7 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
     /// 所以多出来的位置在 OnEnter 时按 itemRole1 克隆，不动 prefab。
     /// 上限取 config.xml 的 rolenum，这里留一个兜底值。
     /// </summary>
-    private const int DefaultRoleSlots = 4;
+    private const int DefaultRoleSlots = 3;
 
     private readonly List<GameObject> _roleItems = new List<GameObject>();
 
@@ -281,7 +281,50 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
         ApplyDeleteButtonLayout();
 
         RefreshRoles();
+        LayoutCreatButton();
         SetBtnState();
+    }
+
+    /// <summary>
+    /// 「+」新建按钮跟着角色往后排。
+    ///
+    /// prefab 里它固定钉在第 3 格，角色数量一变就会夹在角色中间
+    /// （3 个角色时会变成：角色1、角色2、+、角色3）。这里按当前角色数
+    /// 把 + 放到最后一个角色下面。
+    /// </summary>
+    private void LayoutCreatButton()
+    {
+        Button creat = GetView().Btn_Creat;
+        if (creat == null || _roleItems.Count == 0)
+            return;
+
+        RectTransform creatRt = creat.GetComponent<RectTransform>();
+        if (creatRt == null)
+            return;
+
+        Transform root = GetView().Root_Btn;
+        if (root != null && creat.transform.parent != root)
+            creat.transform.SetParent(root, false);
+
+        int count = RoleM.Instance.LoginCharacterInfo == null
+            ? 0 : RoleM.Instance.LoginCharacterInfo.Count;
+
+        // 角色占满时 + 会被 SetBtnState 隐藏，这里仍按「最后一个已用位置的下方」摆
+        int anchorIdx = Mathf.Clamp(count - 1, 0, _roleItems.Count - 1);
+        RectTransform anchorRt = _roleItems[anchorIdx].GetComponent<RectTransform>();
+        if (anchorRt == null)
+            return;
+
+        float step = Mathf.Max(anchorRt.sizeDelta.y, 56f) + 10f;
+        creatRt.anchorMin = anchorRt.anchorMin;
+        creatRt.anchorMax = anchorRt.anchorMax;
+        creatRt.pivot = anchorRt.pivot;
+        creatRt.sizeDelta = anchorRt.sizeDelta;
+
+        // 没角色时 + 占第一格，否则在最后那个角色下面
+        creatRt.anchoredPosition = count <= 0
+            ? anchorRt.anchoredPosition
+            : anchorRt.anchoredPosition + new Vector2(0f, -step);
     }
 
     /// <summary>

@@ -2,7 +2,7 @@
 <Config>
 	<BaseValue>
 
-      <global  rolenum="4"/> <!-- rolenum为最大可创建角色数量-->
+      <global  rolenum="3"/> <!-- rolenum为最大可创建角色数量-->
       <crit k="0.005"  prevalue="4" critdamage="1200"/><!--用来配置暴击率的系数K以及固定常量，还有暴击伤害的基础伤害万分比的分子-->
       <power defvalue="100"  lifevalue="1" attackvalue="1" hitvalue="10" dodgevalue="10" critvalue="30" toughness="10"/><!--用来配置计算战斗力的防御系数、有效生命系数、有效输出系数、命中、闪避、暴击、韧性系数-->
       <bagnum totlenum="500"  equipnum="200" itemnum="300"/><!--用来配置总包裹的格子数量、装备包裹的格子数量、其他道具的格子数量-->

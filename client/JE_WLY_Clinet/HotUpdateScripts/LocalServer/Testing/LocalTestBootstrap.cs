@@ -1050,7 +1050,7 @@ namespace HotUpdateScripts.LocalNet.Testing
         private static CaseResult RunBattle()
         {
             var result = new CaseResult("battle");
-            BoxSnapshot snapshot = BoxSnapshot.Capture();
+            BoxSnapshot snapshot = BoxSnapshot.CaptureTemp(20);
             if (snapshot == null)
             {
                 result.Fail("当前没有角色");
