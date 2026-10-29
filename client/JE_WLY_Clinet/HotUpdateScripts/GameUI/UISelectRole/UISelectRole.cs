@@ -263,8 +263,53 @@ public class UISelectRole : UIBase<UIModelSelectRole, UIViewSelectRole>
         catch { }
         EnsureRoleItems(need);
 
+        ApplyDeleteButtonLayout();
+
         RefreshRoles();
         SetBtnState();
+    }
+
+    /// <summary>
+    /// 把删除按钮挪到右上角，并改成红色短按钮。
+    ///
+    /// prefab 里 Button_Delete 原本排在小岛底部工具栏，和「进入游戏」叠在一起了
+    /// （截图里两个按钮重叠）。这里在代码里重排，不动 prefab：
+    ///   · 锚到右上角，远离「进入游戏」，避免误触
+    ///   · 宽度收窄、文字改成「删除」两个字
+    ///   · 底色改成红色
+    /// </summary>
+    private void ApplyDeleteButtonLayout()
+    {
+        Button btn = GetView().Btn_Delete;
+        if (btn == null)
+            return;
+
+        RectTransform rt = btn.GetComponent<RectTransform>();
+        if (rt != null)
+        {
+            rt.anchorMin = new Vector2(1f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(1f, 1f);
+            rt.anchoredPosition = new Vector2(-22f, -22f);
+            rt.sizeDelta = new Vector2(128f, 56f);
+            rt.localScale = Vector3.one;
+        }
+
+        Image img = btn.GetComponent<Image>();
+        if (img != null)
+        {
+            // 原按钮是蓝色底图，乘上偏红的颜色会发暗紫，所以直接给个干净的红底
+            img.sprite = null;
+            img.color = new Color(0.80f, 0.22f, 0.18f, 0.95f);
+        }
+
+        Text label = btn.GetComponentInChildren<Text>(true);
+        if (label != null)
+        {
+            label.text = "删除";
+            label.color = Color.white;
+            label.fontSize = 26;
+        }
     }
 
     private void SetBtnState()
