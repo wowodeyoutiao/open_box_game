@@ -155,6 +155,8 @@ namespace HotUpdateScripts.LocalNet.Testing
                     cases.Add(RunCoreMissing());
                 if (scenario == "all" || scenario == "shushu_route")
                     cases.Add(RunShushuRoute());
+                if (scenario == "all" || scenario == "effect_camera")
+                    cases.Add(RunEffectCamera());
                 if (scenario == "all" || scenario == "relic_reward")
                     cases.Add(RunRelicReward());
                 if (scenario == "all" || scenario == "pet")
@@ -3155,6 +3157,189 @@ namespace HotUpdateScripts.LocalNet.Testing
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 3D 特效相机可行性验证（路线 A 第 1 步）。
+        ///
+        /// 背景：主界面 Hall 只有 1 个相机（UI 相机），74 个 spine_tx 技能特效
+        /// 全是 MeshRenderer，挂到 UI 节点下没有相机会渲染它 → 看不见。
+        ///
+        /// 本用例验证：在主界面场景里额外挂一个正交相机（depth 更高、Depth-only、
+        /// cullingMask 只圈特效层）后，3D 对象能不能真的被画出来。
+        ///
+        /// 分两段，用来区分「管线问题」和「资源问题」：
+        ///   C 段用程序化 Cube —— 证明渲染管线通不通，不依赖任何资源
+        ///   D 段用真实的 FS_Attack —— 证明技能特效资源能不能正常加载并渲染
+        ///
+        /// 判定手段：把该相机渲染到 RenderTexture，数非透明像素。
+        /// 像素数为 0 = 没画出来；有像素 = 真的渲染了。
+        /// </summary>
+        private static CaseResult RunEffectCamera()
+        {
+            var result = new CaseResult("effect_camera");
+
+            const int EFFECT_LAYER = 30;
+            GameObject camGo = null;
+            GameObject rootGo = null;
+            GameObject cubeGo = null;
+            GameObject effGo = null;
+
+            try
+            {
+                // ---------- A. 环境 ----------
+                Camera[] allCams = Camera.allCameras;
+                Camera mainCam = (allCams != null && allCams.Length > 0) ? allCams[0] : null;
+                result.Check(allCams != null && allCams.Length > 0,
+                    "A.cameraCount=" + (allCams == null ? -1 : allCams.Length));
+
+                // ---------- B. 建特效相机 ----------
+                camGo = new GameObject("TestEffectCam");
+                Camera effCam = camGo.AddComponent<Camera>();
+                effCam.orthographic = true;
+                effCam.orthographicSize = 5f;
+                effCam.depth = (mainCam != null ? mainCam.depth : 0f) + 10f;
+                effCam.clearFlags = CameraClearFlags.Depth;
+                effCam.cullingMask = 1 << EFFECT_LAYER;
+                effCam.transform.position = new Vector3(0f, 0f, -10f);
+                effCam.transform.rotation = Quaternion.identity;
+                effCam.enabled = true;
+
+                result.Check(effCam.orthographic && effCam.cullingMask == (1 << EFFECT_LAYER),
+                    "B.cam depth=" + effCam.depth + " mask=" + effCam.cullingMask);
+
+                rootGo = new GameObject("TestEffectRoot");
+                rootGo.layer = EFFECT_LAYER;
+
+                // ---------- C. 程序化 Cube：验证渲染管线 ----------
+                cubeGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                cubeGo.layer = EFFECT_LAYER;
+                cubeGo.transform.position = Vector3.zero;
+                cubeGo.transform.localScale = Vector3.one * 2f;
+
+                int cubePixels = RenderAndCountPixels(effCam);
+                result.Check(cubePixels > 500, "C.cubePixels=" + cubePixels);
+
+                cubeGo.SetActive(false);
+
+                // ---------- D. 真实特效资源 ----------
+                // 路径格式探测：不同版本/打包方式下资源名可能带 .prefab 或全路径
+                string[] tryPaths =
+                {
+                    "Other/Effects/spine_tx/Prefabs/FS_Attack",
+                    "Other/Effects/spine_tx/Prefabs/FS_Attack.prefab",
+                    "Assets/HotUpdateResources/Main/Other/Effects/spine_tx/Prefabs/FS_Attack.prefab",
+                };
+                GameObject prefab = null;
+                string usedPath = "none";
+                for (int pi = 0; pi < tryPaths.Length && prefab == null; pi++)
+                {
+                    try
+                    {
+                        GameObject p2 = JEngine.Core.AssetMgr.Load<GameObject>(tryPaths[pi]);
+                        if (p2 != null)
+                        {
+                            prefab = p2;
+                            usedPath = tryPaths[pi];
+                        }
+                    }
+                    catch (System.Exception pe)
+                    {
+                        UnityEngine.Debug.LogWarning("[Test] 加载失败 " + tryPaths[pi] + " : " + pe.Message);
+                    }
+                }
+                result.Check(prefab != null, "D.prefab path=" + usedPath);
+
+                if (prefab != null)
+                {
+                    effGo = UnityEngine.Object.Instantiate(prefab);
+                    SetLayerRecursive(effGo, EFFECT_LAYER);
+                    effGo.transform.SetParent(rootGo.transform, false);
+                    effGo.transform.localPosition = Vector3.zero;
+                    effGo.transform.localScale = Vector3.one;
+                    effGo.SetActive(true);
+
+                    int effPixels = RenderAndCountPixels(effCam);
+                    result.Check(effPixels > 0, "D.effectPixels=" + effPixels);
+
+                    Renderer[] rs = effGo.GetComponentsInChildren<Renderer>(true);
+                    int visCount = 0;
+                    for (int i = 0; i < rs.Length; i++)
+                    {
+                        if (rs[i] != null && rs[i].isVisible)
+                            visCount++;
+                    }
+                    result.Check(visCount > 0, "D.visible=" + visCount + "/" + rs.Length);
+                }
+            }
+            finally
+            {
+                if (effGo != null) UnityEngine.Object.Destroy(effGo);
+                if (cubeGo != null) UnityEngine.Object.Destroy(cubeGo);
+                if (rootGo != null) UnityEngine.Object.Destroy(rootGo);
+                if (camGo != null) UnityEngine.Object.Destroy(camGo);
+            }
+
+            return result;
+        }
+
+        /// <summary>把相机渲染到 256x256 RT，统计 alpha &gt; 8 的像素数。</summary>
+        private static int RenderAndCountPixels(Camera cam)
+        {
+            if (cam == null)
+                return -1;
+
+            RenderTexture rt = RenderTexture.GetTemporary(256, 256, 24, RenderTextureFormat.ARGB32);
+            RenderTexture prevActive = RenderTexture.active;
+            RenderTexture prevTarget = cam.targetTexture;
+            Texture2D tex = null;
+            try
+            {
+                // ⚠️ 必须先清空 RT。
+                // 相机用的是 clearFlags=Depth（只清深度、不清颜色），而且 GetTemporary 会复用
+                // 同一个 RT，不清的话会读到上一段渲染的残留像素 —— 会得出「渲染成功」的假结论。
+                RenderTexture.active = rt;
+                GL.Clear(true, true, new Color(0f, 0f, 0f, 0f));
+                RenderTexture.active = prevActive;
+
+                cam.targetTexture = rt;
+                cam.Render();
+
+                RenderTexture.active = rt;
+                tex = new Texture2D(256, 256, TextureFormat.RGBA32, false);
+                tex.ReadPixels(new Rect(0, 0, 256, 256), 0, 0);
+                tex.Apply();
+
+                Color32[] px = tex.GetPixels32();
+                int count = 0;
+                for (int i = 0; i < px.Length; i++)
+                {
+                    if (px[i].a > 8)
+                        count++;
+                }
+                return count;
+            }
+            catch (System.Exception e)
+            {
+                UnityEngine.Debug.LogError("[Test] RenderAndCountPixels 失败: " + e);
+                return -1;
+            }
+            finally
+            {
+                cam.targetTexture = prevTarget;
+                RenderTexture.active = prevActive;
+                if (tex != null) UnityEngine.Object.Destroy(tex);
+                RenderTexture.ReleaseTemporary(rt);
+            }
+        }
+
+        private static void SetLayerRecursive(GameObject go, int layer)
+        {
+            if (go == null)
+                return;
+            go.layer = layer;
+            for (int i = 0; i < go.transform.childCount; i++)
+                SetLayerRecursive(go.transform.GetChild(i).gameObject, layer);
         }
 
         /// <summary>
