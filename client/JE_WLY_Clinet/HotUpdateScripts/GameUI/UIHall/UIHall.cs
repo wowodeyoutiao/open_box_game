@@ -2334,9 +2334,13 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
         if (string.IsNullOrEmpty(effectKey))
             return;
 
+        // 3D 特效需要独立相机 + 世界坐标（UI 节点下没有相机会渲染 SkeletonAnimation）
+        EnsureHallEffectRoot();
+        if (_hallEffectRoot == null)
+            return;
+
         string effectPath = GameConst.GetEffPath(effectKey);
-        Transform parent = target.transform.parent;
-        Vector3 localPos = target.transform.localPosition;
+        Vector3 worldPos = target.transform.position;
 
         _ = GameHelper.Instance.SetAsyncObj("hall_" + effectKey, effectPath, (go) =>
         {
@@ -2348,21 +2352,23 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
                 return;
             }
 
-            if (seq != _encounterSeq || MonsterObj != target || parent == null)
+            if (seq != _encounterSeq || MonsterObj != target || _hallEffectRoot == null)
             {
                 PoolHelper.Instance.RecycObj(go);
                 return;
             }
 
             go.SetActive(false);
-            go.transform.SetParent(parent, false);
-            go.transform.localPosition = localPos;
-            go.transform.SetAsLastSibling();
+            go.transform.SetParent(_hallEffectRoot, false);
+            // 特效相机和主相机正交尺寸一致、xy 相同，所以 UI 世界坐标可以直接用
+            go.transform.position = new Vector3(worldPos.x, worldPos.y, 0f);
+            go.transform.localScale = Vector3.one;
+            SetLayerRecursive(go, HallEffectLayer);
             go.SetActive(true);
             RestartHallEffect(go);
 
             JEngine.Core.Log.Print("[UIHall] 技能特效 " + effectKey
-                + " parent=" + parent.name + " pos=" + localPos);
+                + " worldPos=(" + worldPos.x.ToString("F1") + "," + worldPos.y.ToString("F1") + ")");
 
             GameObject effectObj = go;
             int effectSeq = seq;
@@ -2390,6 +2396,80 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
         return "eff_JSAttack";
     }
 
+    /// <summary>3D 特效专用层（避开场景已有层，主相机不渲染它）。</summary>
+    private const int HallEffectLayer = 30;
+
+    /// <summary>挂 3D 技能特效的根节点，由 EnsureHallEffectRoot 创建。</summary>
+    private Transform _hallEffectRoot;
+
+    /// <summary>渲染 3D 技能特效的正交相机。</summary>
+    private Camera _hallEffectCamera;
+
+    /// <summary>
+    /// 创建 3D 特效相机 + EffectRoot（幂等）。
+    ///
+    /// 为什么要单开相机：主界面 Canvas 是 Screen Space - Camera，场景只有 1 个相机，
+    /// 而 spine_tx 下的技能特效是 SkeletonAnimation（3D 版 Spine，用 MeshRenderer 渲染），
+    /// 挂到 UI 节点下没有相机会渲染它 —— 这就是「打了没特效」的根因。
+    ///
+    /// 相机参数照抄主相机（正交、同样的 orthographicSize、同样的 xy），
+    /// 这样 UI 的世界坐标可以直接当特效坐标用，不需要额外换算。
+    /// depth 比主相机高 + Depth-only，保证画在 UI 之上。
+    /// </summary>
+    private void EnsureHallEffectRoot()
+    {
+        if (_hallEffectRoot != null && _hallEffectCamera != null)
+            return;
+
+        try
+        {
+            Camera mainCam = Camera.allCameras != null && Camera.allCameras.Length > 0
+                ? Camera.allCameras[0] : null;
+
+            GameObject camGo = new GameObject("HallEffectCamera");
+            Camera cam = camGo.AddComponent<Camera>();
+            cam.orthographic = true;
+            cam.orthographicSize = mainCam != null ? mainCam.orthographicSize : 5f;
+            cam.depth = (mainCam != null ? mainCam.depth : 0f) + 10f;
+            cam.clearFlags = CameraClearFlags.Depth;
+            cam.cullingMask = 1 << HallEffectLayer;
+            cam.nearClipPlane = 0.3f;
+            cam.farClipPlane = 100f;
+            if (mainCam != null)
+            {
+                cam.transform.position = new Vector3(
+                    mainCam.transform.position.x, mainCam.transform.position.y, -10f);
+                // 主相机不再渲染特效层，避免重复渲染 / 被 UI 盖住
+                mainCam.cullingMask &= ~(1 << HallEffectLayer);
+            }
+            else
+            {
+                cam.transform.position = new Vector3(0f, 0f, -10f);
+            }
+            _hallEffectCamera = cam;
+
+            GameObject rootGo = new GameObject("HallEffectRoot");
+            rootGo.layer = HallEffectLayer;
+            rootGo.transform.position = Vector3.zero;
+            _hallEffectRoot = rootGo.transform;
+
+            JEngine.Core.Log.Print("[UIHall] 3D 特效相机已创建 size=" + cam.orthographicSize + " depth=" + cam.depth);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("[UIHall] 创建特效相机失败: " + e);
+        }
+    }
+
+    private static void SetLayerRecursive(GameObject go, int layer)
+    {
+        if (go == null)
+            return;
+        go.layer = layer;
+        for (int i = 0; i < go.transform.childCount; i++)
+            SetLayerRecursive(go.transform.GetChild(i).gameObject, layer);
+    }
+
     private void RestartHallEffect(GameObject effect)
     {
         ParticleSystem[] particles = effect.GetComponentsInChildren<ParticleSystem>(true);
@@ -2415,6 +2495,27 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
             string effectAnim = ResolveMonsterAnimation(graphics[i], "hit", "animation");
             if (!string.IsNullOrEmpty(effectAnim))
                 graphics[i].AnimationState.SetAnimation(0, effectAnim, false);
+        }
+
+        // spine_tx 下的技能特效是 SkeletonAnimation（3D 版 Spine，MeshRenderer 渲染），
+        // 不是 SkeletonGraphic（UI 版）。原来只找 SkeletonGraphic，所以一直空转。
+        SkeletonAnimation[] anims = effect.GetComponentsInChildren<SkeletonAnimation>(true);
+        for (int i = 0; i < anims.Length; i++)
+        {
+            SkeletonAnimation sa = anims[i];
+            if (sa == null)
+                continue;
+            sa.gameObject.SetActive(true);
+            if (sa.AnimationState == null)
+                continue;
+            sa.AnimationState.ClearTracks();
+            string effectAnim = ResolveMonsterAnimation(sa, "hit", "animation");
+            if (!string.IsNullOrEmpty(effectAnim))
+            {
+                sa.AnimationState.SetAnimation(0, effectAnim, false);
+                // 手动推进一帧，避免首帧还没生成网格（batchmode / 首次激活时尤其明显）
+                sa.Update(0.016f);
+            }
         }
     }
 
@@ -2548,6 +2649,26 @@ public class UIHall : UIBase<UIModelHall, UIViewHall>
             || string.IsNullOrEmpty(animationName))
             return false;
         return skeleton.Skeleton.Data.FindAnimation(animationName) != null;
+    }
+
+    private static bool HasMonsterAnimation(SkeletonAnimation skeleton, string animationName)
+    {
+        if (skeleton == null || skeleton.Skeleton == null || skeleton.Skeleton.Data == null
+            || string.IsNullOrEmpty(animationName))
+            return false;
+        return skeleton.Skeleton.Data.FindAnimation(animationName) != null;
+    }
+
+    private static string ResolveMonsterAnimation(
+        SkeletonAnimation skeleton,
+        string preferred,
+        string fallback)
+    {
+        if (!string.IsNullOrEmpty(preferred) && HasMonsterAnimation(skeleton, preferred))
+            return preferred;
+        if (!string.IsNullOrEmpty(fallback) && HasMonsterAnimation(skeleton, fallback))
+            return fallback;
+        return null;
     }
 
     private static string ResolveMonsterAnimation(

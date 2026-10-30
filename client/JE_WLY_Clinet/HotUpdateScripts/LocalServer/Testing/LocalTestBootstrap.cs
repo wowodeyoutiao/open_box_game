@@ -3270,6 +3270,29 @@ namespace HotUpdateScripts.LocalNet.Testing
                             visCount++;
                     }
                     result.Check(visCount > 0, "D.visible=" + visCount + "/" + rs.Length);
+
+                    // ---------- E. 播放 Spine 3D 动画 ----------
+                    // spine_tx 下的技能特效是 SkeletonAnimation（3D 版 Spine），
+                    // 接入代码里正是靠 SetAnimation + Update 推动它。
+                    Spine.Unity.SkeletonAnimation sa =
+                        effGo.GetComponentInChildren<Spine.Unity.SkeletonAnimation>(true);
+                    result.Check(sa != null, "E.hasSkeletonAnimation=" + (sa != null));
+
+                    if (sa != null && sa.AnimationState != null)
+                    {
+                        sa.AnimationState.ClearTracks();
+                        bool hasHit = sa.Skeleton != null && sa.Skeleton.Data != null
+                            && sa.Skeleton.Data.FindAnimation("hit") != null;
+                        result.Check(hasHit, "E.animHitExists=" + hasHit);
+
+                        if (hasHit)
+                        {
+                            sa.AnimationState.SetAnimation(0, "hit", false);
+                            sa.Update(0.1f);
+                            int animPixels = RenderAndCountPixels(effCam);
+                            result.Check(animPixels > 0, "E.afterAnimPixels=" + animPixels);
+                        }
+                    }
                 }
             }
             finally
@@ -5721,15 +5744,52 @@ namespace HotUpdateScripts.LocalNet.Testing
                 SaveDocument parsed = JEngine.LitJson.JsonMapper.ToObject<SaveDocument>(json);
                 List<LocalRole> restored = SaveDocumentMapper.ToLocalRoles(parsed);
                 bool savedEquip = false;
-                if (restored != null && restored.Count > 0)
+                string peDiag = "";
+                PartnerSlotInfo restoredSlot = null;
+                LocalRole peRestoredRole = null;
+                if (restored != null)
                 {
-                    restored[0].EnsurePartnerEquipSlots();
-                    PartnerSlotInfo restoredSlot = restored[0].FindPartnerSlot(1);
-                    savedEquip = restoredSlot != null && restoredSlot.Equips != null
-                        && restoredSlot.Equips.Count > 1 && restoredSlot.Equips[1].Item != null
-                        && restoredSlot.Equips[1].Item.Uid == weaponUid;
+                    for (int ri = 0; ri < restored.Count; ri++)
+                    {
+                        if (restored[ri] != null && restored[ri].Uid == role.Uid)
+                        {
+                            peRestoredRole = restored[ri];
+                            break;
+                        }
+                    }
                 }
-                result.Check(savedEquip, "pe.save=" + savedEquip);
+                // 不能取 restored[0]：玩家可能有多个角色，当前角色不一定是第一个
+                if (peRestoredRole != null)
+                {
+                    peRestoredRole.EnsurePartnerEquipSlots();
+                    restoredSlot = peRestoredRole.FindPartnerSlot(1);
+                    peDiag = " slot=" + (restoredSlot != null);
+                    if (restoredSlot != null && restoredSlot.Equips != null)
+                    {
+                        peDiag += " cnt=" + restoredSlot.Equips.Count + " uids=";
+                        for (int k = 0; k < restoredSlot.Equips.Count; k++)
+                        {
+                            var ek = restoredSlot.Equips[k];
+                            peDiag += (ek == null || ek.Item == null) ? "null" : ek.Item.Uid.ToString();
+                            peDiag += "|";
+                        }
+                    }
+                    // 按 uid 查，不按固定下标：
+                    // 伙伴装备槽可能有 0~N 件，硬编码 Equips[1] 在只有 1 件时必然失败。
+                    if (restoredSlot != null && restoredSlot.Equips != null)
+                    {
+                        for (int i = 0; i < restoredSlot.Equips.Count; i++)
+                        {
+                            var e = restoredSlot.Equips[i];
+                            if (e != null && e.Item != null && e.Item.Uid == weaponUid)
+                            {
+                                savedEquip = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                result.Check(savedEquip, "pe.save=" + savedEquip + peDiag + " want=" + weaponUid);
 
                 // 8) 脱下回背包
                 var takeOff = ItemService.Instance.ChangeEquip(TCPClientMgr.ProtoSerialize(new ChangeEquipRequest
@@ -6067,12 +6127,34 @@ namespace HotUpdateScripts.LocalNet.Testing
                 List<LocalRole> restored = SaveDocumentMapper.ToLocalRoles(
                     JEngine.LitJson.JsonMapper.ToObject<SaveDocument>(json));
                 bool saved = false;
-                if (restored != null && restored.Count > 0)
+                LocalRole puRestoredRole = null;
+                if (restored != null)
                 {
-                    restored[0].EnsurePartnerEquipSlots();
-                    PartnerSlotInfo rs = restored[0].FindPartnerSlot(1);
-                    saved = rs != null && rs.Equips[1] != null
-                        && rs.Equips[1].Enhance == 1 && rs.Equips[1].Stars == 1;
+                    for (int ri = 0; ri < restored.Count; ri++)
+                    {
+                        if (restored[ri] != null && restored[ri].Uid == role.Uid)
+                        {
+                            puRestoredRole = restored[ri];
+                            break;
+                        }
+                    }
+                }
+                if (puRestoredRole != null)
+                {
+                    puRestoredRole.EnsurePartnerEquipSlots();
+                    PartnerSlotInfo rs = puRestoredRole.FindPartnerSlot(1);
+                    if (rs != null && rs.Equips != null)
+                    {
+                        for (int i = 0; i < rs.Equips.Count; i++)
+                        {
+                            var e = rs.Equips[i];
+                            if (e != null && e.Enhance == 1 && e.Stars == 1)
+                            {
+                                saved = true;
+                                break;
+                            }
+                        }
+                    }
                 }
                 result.Check(saved, "pu.save=" + saved);
             }
